@@ -1,0 +1,19 @@
+{
+  "id": "memory-adapter",
+  "name": "External Memory Adapter",
+  "description": "Adds bounded external memory retrieval to eligible prompts.",
+  "activation": { "onStartup": true },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "endpoint": { "type": "string", "format": "uri-reference" },
+      "timeoutMs": { "type": "integer", "minimum": 250, "maximum": 10000 },
+      "maxResults": { "type": "integer", "minimum": 1, "maximum": 10 },
+      "enabled": { "type": "boolean" },
+      "agents": { "type": "array", "items": { "type": "string" } },
+      "allowedChatTypes": { "type": "array", "items": { "type": "string" } },
+      "allowedChatIds": { "type": "array", "items": { "type": "string" } }
+    }
+  }
+}
