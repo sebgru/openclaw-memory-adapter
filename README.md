@@ -1,7 +1,7 @@
 # OpenClaw Memory Adapter
 
-[![CI](https://github.com/sebgru/openclaw-memory-adapter/actions/workflows/ci.yml/badge.svg)](https://github.com/sebgru/openclaw-memory-adapter/actions/workflows/ci.yml)
-[![codecov](https://codecov.io/gh/sebgru/openclaw-memory-adapter/graph/badge.svg?token=jwMr8sJGGb)](https://codecov.io/gh/sebgru/openclaw-memory-adapter)
+[![CI](https://github.com/sebgru/openclaw-memory-adapter/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/sebgru/openclaw-memory-adapter/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/sebgru/openclaw-memory-adapter/branch/main/graph/badge.svg?token=jwMr8sJGGb)](https://codecov.io/gh/sebgru/openclaw-memory-adapter)
 [![License: MIT](https://img.shields.io/github/license/sebgru/openclaw-memory-adapter.svg?branch=main)](LICENSE)
 
 An external OpenClaw plugin that retrieves bounded memory context from an HTTP
