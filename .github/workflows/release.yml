@@ -42,16 +42,9 @@ jobs:
 
       - name: Build package tarball
         run: npm pack
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Upload tarball to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: sebgru-openclaw-memory-adapter-*.tgz
           generate_release_notes: true
-
-      - name: Publish to npm
-        run: npm publish
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

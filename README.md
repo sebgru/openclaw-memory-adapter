@@ -80,7 +80,7 @@ npm run check
 ## CI
 
 - **CI** (`ci.yml`): ESLint, syntax check, tests with coverage (≥ 99%, currently 100%), and Codecov upload.
-- **Release** (`release.yml`): triggered only on version tags (`v*.*.*`); runs lint and tests, verifies the tag matches `package.json`, builds the npm package tarball, attaches it to a GitHub Release, and publishes to npm.
+- **Release** (`release.yml`): triggered only on version tags (`v*.*.*`); runs lint and tests, verifies the tag matches `package.json`, builds the npm package tarball, and attaches it to a GitHub Release.
 
 To publish a release:
 
@@ -89,10 +89,10 @@ git tag v0.1.0
 git push origin v0.1.0
 ```
 
-Install a tagged release with OpenClaw afterwards:
+Install the tagged release with OpenClaw from GitHub:
 
 ```sh
-openclaw plugins install npm:@sebgru/openclaw-memory-adapter@0.1.0
+openclaw plugins install https://github.com/sebgru/openclaw-memory-adapter/releases/download/v1.0.0/sebgru-openclaw-memory-adapter-1.0.0.tgz
 ```
 
 ## Development
