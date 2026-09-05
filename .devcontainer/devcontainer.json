@@ -23,7 +23,6 @@
                 "esbenp.prettier-vscode",
                 "ms-vscode.vscode-typescript-next",
                 "tamasfe.even-better-toml",
-                "eamodio.gitlens",
                 "github.vscode-github-actions",
                 "streetsidesoftware.code-spell-checker"
             ],
