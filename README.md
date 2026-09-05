@@ -1,5 +1,9 @@
 # OpenClaw Memory Adapter
 
+[![CI](https://github.com/sebgru/openclaw-memory-adapter/actions/workflows/ci.yml/badge.svg)](https://github.com/sebgru/openclaw-memory-adapter/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/sebgru/openclaw-memory-adapter/graph/badge.svg)](https://codecov.io/gh/sebgru/openclaw-memory-adapter)
+[![License: MIT](https://img.shields.io/github/license/sebgru/openclaw-memory-adapter.svg?branch=main)](LICENSE)
+
 An external OpenClaw plugin that retrieves bounded memory context from an HTTP
 memory service. It is deliberately separate from OpenClaw's bundled memory
 indexer and never invokes indexing.
@@ -72,3 +76,35 @@ production.
 npm test
 npm run check
 ```
+
+## CI
+
+- **CI** (`ci.yml`): ESLint, syntax check, tests with coverage (≥ 99%, currently 100%), and Codecov upload.
+- **Release** (`release.yml`): triggered only on version tags (`v*.*.*`); runs lint and tests, verifies the tag matches `package.json`, builds the npm package tarball, attaches it to a GitHub Release, and publishes to npm.
+
+To publish a release:
+
+```sh
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+Install a tagged release with OpenClaw afterwards:
+
+```sh
+openclaw plugins install npm:@sebgru/openclaw-memory-adapter@0.1.0
+```
+
+## Development
+
+```sh
+npm install
+npm run lint
+npm test
+npm run test:coverage
+```
+
+Tests use a local stub for `openclaw/plugin-sdk/plugin-entry` (see
+`test/stubs/`) so the plugin entry is importable and fully covered without a
+running OpenClaw Gateway. When the real `openclaw` peer package is present, it
+is used instead.

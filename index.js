@@ -5,6 +5,8 @@ function listAllows(list, value) {
   return !Array.isArray(list) || list.length === 0 || (value && list.includes(value));
 }
 
+export { eligible, listAllows };
+
 function eligible(event, ctx, config) {
   if (config.enabled === false) return false;
   if (!listAllows(config.agents, ctx.agentId)) return false;

@@ -4,11 +4,56 @@
   "description": "OpenClaw plugin for resilient memory retrieval through an external HTTP memory service.",
   "type": "module",
   "license": "MIT",
-  "engines": { "node": ">=22" },
-  "scripts": {
-    "test": "node --test",
-    "check": "node --check index.js && node --check src/client.js"
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sebgru/openclaw-memory-adapter.git"
   },
-  "openclaw": { "extensions": ["./index.js"] },
-  "files": ["index.js", "src", "openclaw.plugin.json", "README.md", "LICENSE"]
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --import ./test/stubs/loader-register.mjs --test",
+    "test:coverage": "c8 --100 node --import ./test/stubs/loader-register.mjs --test",
+    "lint": "eslint .",
+    "check": "node --check index.js && node --check src/client.js",
+    "pack:plugin": "npm pack",
+    "validate:plugin": "openclaw plugins validate --root . --entry ./index.js"
+  },
+  "openclaw": {
+    "extensions": [
+      "./index.js"
+    ]
+  },
+  "files": [
+    "index.js",
+    "src",
+    "openclaw.plugin.json",
+    "README.md",
+    "LICENSE"
+  ],
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "c8": "^10.1.3",
+    "eslint": "^10.10.0",
+    "globals": "^17.12.0"
+  },
+  "peerDependencies": {
+    "openclaw": "*"
+  },
+  "peerDependenciesMeta": {
+    "openclaw": {
+      "optional": true
+    }
+  },
+  "c8": {
+    "include": [
+      "index.js",
+      "src/**"
+    ],
+    "reporter": [
+      "text",
+      "text-summary",
+      "lcov"
+    ]
+  }
 }
