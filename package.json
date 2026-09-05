@@ -1,0 +1,14 @@
+{
+  "name": "@sebgru/openclaw-memory-adapter",
+  "version": "0.1.0",
+  "description": "OpenClaw plugin for resilient memory retrieval through an external HTTP memory service.",
+  "type": "module",
+  "license": "MIT",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "test": "node --test",
+    "check": "node --check index.js && node --check src/client.js"
+  },
+  "openclaw": { "extensions": ["./index.js"] },
+  "files": ["index.js", "src", "openclaw.plugin.json", "README.md", "LICENSE"]
+}
