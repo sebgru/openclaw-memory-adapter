@@ -34,7 +34,7 @@ export async function searchMemory(query, config, fetchImpl = globalThis.fetch) 
     const response = await fetchImpl(`${normalized.endpoint}/search`, {
       method: "POST",
       headers: { "content-type": "application/json", accept: "application/json" },
-      body: JSON.stringify({ query, limit: normalized.maxResults }),
+      body: JSON.stringify({ q: query, limit: normalized.maxResults }),
       signal: controller.signal,
     });
     if (!response.ok) throw new Error(`memory service returned HTTP ${response.status}`);

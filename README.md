@@ -10,7 +10,7 @@ indexer and never invokes indexing.
 
 ## Behavior
 
-- Calls `POST {endpoint}/search` with `{ "query": "...", "limit": 5 }`.
+- Calls `POST {endpoint}/search` with `{ "q": "...", "limit": 5 }`.
 - Adds normalized results to `before_prompt_build` as reference context.
 - Uses a short timeout and fails closed when the service is unavailable.
 - Supports agent/chat allowlists.
