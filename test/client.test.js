@@ -73,16 +73,21 @@ test("normalizeResults falls back to path and numeric score", () => {
 
 test("searchMemory uses global fetch by default", async () => {
     const originalFetch = globalThis.fetch;
-    globalThis.fetch = async () => ({
-        ok: true,
-        async json() {
-            return { results: [{ text: "default fetch used" }] };
-        },
-    });
+    let requestBody;
+    globalThis.fetch = async (_url, options) => {
+        requestBody = JSON.parse(options.body);
+        return {
+            ok: true,
+            async json() {
+                return { results: [{ text: "default fetch used" }] };
+            },
+        };
+    };
     try {
         assert.deepEqual(await searchMemory("q", ENDPOINT), [
             { text: "default fetch used", source: "", score: undefined },
         ]);
+        assert.deepEqual(requestBody, { q: "q", limit: 5 });
     } finally {
         globalThis.fetch = originalFetch;
     }
