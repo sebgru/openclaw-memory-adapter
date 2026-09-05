@@ -8,6 +8,18 @@ import {
 } from "../src/client.js";
 import plugin, { listAllows } from "../index.js";
 
+test("searches with the service GET query fields and normalizes results", async () => {
+  let request;
+  const fetchImpl = async (url, options) => {
+    request = { url, options };
+    return { ok: true, async json() { return { results: [{ text: "fact", path: "MEMORY.md", score: 0.9 }] }; } };
+  };
+  const results = await searchMemory("where", { endpoint: "http://memory:8080" }, fetchImpl);
+  assert.equal(request.url, "http://memory:8080/search?q=where&limit=5");
+  assert.equal(request.options.method, "GET");
+  assert.equal(request.options.body, undefined);
+  assert.deepEqual(results, [{ text: "fact", source: "MEMORY.md", score: 0.9 }]);
+});
 const ENDPOINT = { endpoint: "http://memory:8080" };
 
 // ── normalizeConfig ──────────────────────────────────────────────────────────
@@ -73,9 +85,9 @@ test("normalizeResults falls back to path and numeric score", () => {
 
 test("searchMemory uses global fetch by default", async () => {
     const originalFetch = globalThis.fetch;
-    let requestBody;
-    globalThis.fetch = async (_url, options) => {
-        requestBody = JSON.parse(options.body);
+    let requestUrl;
+    globalThis.fetch = async (url, _options) => {
+        requestUrl = url;
         return {
             ok: true,
             async json() {
@@ -87,7 +99,7 @@ test("searchMemory uses global fetch by default", async () => {
         assert.deepEqual(await searchMemory("q", ENDPOINT), [
             { text: "default fetch used", source: "", score: undefined },
         ]);
-        assert.deepEqual(requestBody, { q: "q", limit: 5 });
+        assert.equal(requestUrl, "http://memory:8080/search?q=q&limit=5");
     } finally {
         globalThis.fetch = originalFetch;
     }

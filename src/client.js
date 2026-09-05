@@ -31,10 +31,10 @@ export async function searchMemory(query, config, fetchImpl = globalThis.fetch) 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), normalized.timeoutMs);
   try {
-    const response = await fetchImpl(`${normalized.endpoint}/search`, {
-      method: "POST",
-      headers: { "content-type": "application/json", accept: "application/json" },
-      body: JSON.stringify({ q: query, limit: normalized.maxResults }),
+    const params = new URLSearchParams({ q: query, limit: String(normalized.maxResults) });
+    const response = await fetchImpl(`${normalized.endpoint}/search?${params}`, {
+      method: "GET",
+      headers: { accept: "application/json" },
       signal: controller.signal,
     });
     if (!response.ok) throw new Error(`memory service returned HTTP ${response.status}`);
