@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { formatMemoryContext, normalizeResults, searchMemory } from "../src/client.js";
 
-test("search posts only a query and normalizes results", async () => {
+test("search posts the service query field and normalizes results", async () => {
   let request;
   const fetchImpl = async (url, options) => {
     request = { url, options };
@@ -10,7 +10,7 @@ test("search posts only a query and normalizes results", async () => {
   };
   const results = await searchMemory("where", { endpoint: "http://memory:8080" }, fetchImpl);
   assert.equal(request.url, "http://memory:8080/search");
-  assert.deepEqual(JSON.parse(request.options.body), { query: "where", limit: 5 });
+  assert.deepEqual(JSON.parse(request.options.body), { q: "where", limit: 5 });
   assert.deepEqual(results, [{ text: "fact", source: "MEMORY.md", score: 0.9 }]);
 });
 
