@@ -5,20 +5,50 @@ import {
     normalizeConfig,
     normalizeResults,
     searchMemory,
+    searchUnified,
 } from "../src/client.js";
 import plugin, { listAllows } from "../index.js";
 
 test("searches with the service GET query fields and normalizes results", async () => {
-  let request;
-  const fetchImpl = async (url, options) => {
-    request = { url, options };
-    return { ok: true, async json() { return { results: [{ text: "fact", path: "MEMORY.md", score: 0.9 }] }; } };
-  };
-  const results = await searchMemory("where", { endpoint: "http://memory:8080" }, fetchImpl);
-  assert.equal(request.url, "http://memory:8080/search?q=where&limit=5");
-  assert.equal(request.options.method, "GET");
-  assert.equal(request.options.body, undefined);
-  assert.deepEqual(results, [{ text: "fact", source: "MEMORY.md", score: 0.9 }]);
+    let request;
+    const fetchImpl = async (url, options) => {
+        request = { url, options };
+        return { ok: true, async json() { return { results: [{ text: "fact", path: "MEMORY.md", score: 0.9 }] }; } };
+    };
+    const results = await searchMemory("where", { endpoint: "http://memory:8080" }, fetchImpl);
+    assert.equal(request.url, "http://memory:8080/search?q=where&limit=5");
+    assert.equal(request.options.method, "GET");
+    assert.equal(request.options.body, undefined);
+    assert.deepEqual(results, [{ text: "fact", source: "MEMORY.md", score: 0.9 }]);
+});
+
+test("searchUnified calls the unified endpoint with an explicit scope", async () => {
+    let request;
+    const fetchImpl = async (url, options) => {
+        request = { url, options };
+        return { ok: true, async json() { return { results: [{ text: "archive fact", source: "archive", lexical_score: 0.2, semantic_score: 0.8 }] }; } };
+    };
+    const results = await searchUnified("where", { endpoint: "http://memory:8080", scope: "archive" }, fetchImpl);
+    assert.equal(request.url, "http://memory:8080/unified/search?q=where&limit=5&scope=archive");
+    assert.equal(results[0].text, "archive fact");
+    assert.equal(results[0].source, "archive");
+    assert.equal(results[0].lexicalScore, 0.2);
+    assert.equal(results[0].semanticScore, 0.8);
+});
+
+test("searchUnified omits scope param when scope is not set", async () => {
+    let request;
+    const fetchImpl = async (url, options) => {
+        request = { url, options };
+        return { ok: true, async json() { return { results: [] }; } };
+    };
+    await searchUnified("where", { endpoint: "http://memory:8080", scope: "bogus" }, fetchImpl);
+    assert.equal(request.url, "http://memory:8080/unified/search?q=where&limit=5&scope=all");
+});
+
+test("searchService rejects empty queries", async () => {
+    await assert.rejects(() => searchUnified("   ", { endpoint: "http://memory:8080" }, async () => ({})), /must not be empty/);
+    await assert.rejects(() => searchUnified(null, { endpoint: "http://memory:8080" }, async () => ({})), /must not be empty/);
 });
 const ENDPOINT = { endpoint: "http://memory:8080" };
 
@@ -81,6 +111,35 @@ test("normalizeResults falls back to path and numeric score", () => {
         [{ text: "x", source: "p.md", score: 2 }],
     );
     assert.deepEqual(normalizeResults({ results: [{ text: "x", source: 7 }] }, 5)[0].source, "7");
+});
+
+test("normalizeResults keeps rich metadata when present", () => {
+    const [rich] = normalizeResults({
+        results: [{
+            text: "rich",
+            id: "abc",
+            source: "s.md",
+            path: "docs/s.md",
+            heading: "Intro",
+            line: 12,
+            lexical_score: 0.1,
+            semantic_score: 0.9,
+        }]
+    }, 5);
+    assert.equal(rich.id, "abc");
+    assert.equal(rich.path, "docs/s.md");
+    assert.equal(rich.heading, "Intro");
+    assert.equal(rich.line, 12);
+    assert.equal(rich.lexicalScore, 0.1);
+    assert.equal(rich.semanticScore, 0.9);
+
+    const [partial] = normalizeResults({ results: [{ text: "partial", source: "only", lexical_score: "bad", semantic_score: 0.5 }] }, 5);
+    assert.equal(partial.lexicalScore, undefined);
+    assert.equal(partial.semanticScore, 0.5);
+    assert.equal(partial.path, undefined);
+    assert.equal(partial.heading, undefined);
+    assert.equal(partial.line, undefined);
+    assert.equal(partial.id, undefined);
 });
 
 test("searchMemory uses global fetch by default", async () => {
@@ -157,6 +216,24 @@ test("formatMemoryContext numbers results and includes sources", () => {
     assert.match(context, /2\. second \(a\.md\)/);
 });
 
+test("formatMemoryContext returns empty string for no results", () => {
+    assert.equal(formatMemoryContext([]), "");
+});
+
+test("formatMemoryContext includes path and line location", () => {
+    const context = formatMemoryContext([{ text: "located", source: "s.md", path: "docs/s.md", line: 7 }]);
+    assert.match(context, /located \(s\.md \/ docs\/s\.md \/ line 7\)/);
+});
+
+test("formatMemoryContext truncates at maxLength", () => {
+    const context = formatMemoryContext([
+        { text: "short" },
+        { text: "this line is far too long to fit" },
+    ], 40);
+    assert.match(context, /1\. short/);
+    assert.doesNotMatch(context, /too long/);
+});
+
 // ── plugin entry (index.js) ──────────────────────────────────────────────────
 
 function makeApi(config) {
@@ -166,6 +243,7 @@ function makeApi(config) {
         pluginConfig: config,
         logger: { warn: (msg) => { handlers.lastWarn = msg; } },
         on: (name, fn) => { handlers[name] = fn; },
+        registerTool: (factory, options) => { handlers.tool = typeof factory === "function" ? factory({ agentId: "a" }) : factory; handlers.toolOptions = options; },
     };
 }
 
@@ -189,6 +267,55 @@ test("register tolerates missing pluginConfig", async () => {
     assert.equal(typeof api.handlers.before_prompt_build, "function");
     const result = await api.handlers.before_prompt_build({ prompt: "" }, CTX);
     assert.equal(result, undefined);
+});
+
+test("tool honors configured scope and per-call overrides", async () => {
+    const originalFetch = globalThis.fetch;
+    let requestUrl;
+    globalThis.fetch = async (url) => {
+        requestUrl = url;
+        return { ok: true, async json() { return { results: [{ text: "scoped fact" }] }; } };
+    };
+    try {
+        const handlers = setup({ ...ENDPOINT, scope: "main" });
+        await handlers.tool.execute("call-1", { query: "q" });
+        assert.equal(requestUrl, "http://memory:8080/unified/search?q=q&limit=5&scope=main");
+        await handlers.tool.execute("call-2", { query: "q", scope: "archive", maxResults: 3 });
+        assert.equal(requestUrl, "http://memory:8080/unified/search?q=q&limit=3&scope=archive");
+    } finally {
+        globalThis.fetch = originalFetch;
+    }
+});
+
+test("tool reports no results", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => ({ ok: true, async json() { return { results: [] }; } });
+    try {
+        const handlers = setup(ENDPOINT);
+        const result = await handlers.tool.execute("call-1", { query: "q" });
+        assert.equal(result.content[0].text, "No memory results.");
+        assert.deepEqual(result.details.results, []);
+    } finally {
+        globalThis.fetch = originalFetch;
+    }
+});
+
+test("prompt hook uses configured maxContextLength", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => ({
+        ok: true,
+        async json() {
+            return { results: [{ text: "kept" }, { text: "dropped because the limit is tiny and this line is much longer than forty characters" }] };
+        },
+    });
+    try {
+        const handlers = setup({ ...ENDPOINT, maxContextLength: 40 });
+        const result = await handlers.before_prompt_build({ prompt: "hello" }, CTX);
+        assert.match(result.prependContext, /kept/);
+        assert.doesNotMatch(result.prependContext, /dropped/);
+    } finally {
+        globalThis.fetch = originalFetch;
+    }
 });
 
 test("eligible returns undefined for empty or non-string prompts", async () => {

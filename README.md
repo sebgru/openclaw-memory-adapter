@@ -10,11 +10,28 @@ indexer and never invokes indexing.
 
 ## Behavior
 
-- Calls `POST {endpoint}/search` with `{ "q": "...", "limit": 5 }`.
+- Calls `GET {endpoint}/unified/search?q=...&scope=all&limit=5`.
+- Exposes the `unified_memory_search` tool for explicit searches across main
+  memory, registered artifacts, and the optional session archive.
 - Adds normalized results to `before_prompt_build` as reference context.
 - Uses a short timeout and fails closed when the service is unavailable.
 - Supports agent/chat allowlists.
-- Does not search archives automatically and never calls `/index`.
+- The prompt hook uses the `all` scope by default; the explicit tool supports
+  `all`, `main`, and `archive`. It never calls `/index`.
+
+## Unified memory search tool
+
+The plugin registers an explicit `unified_memory_search` tool that agents can
+invoke directly:
+
+- `query` (required): question or search terms.
+- `scope` (optional): `all` (default), `main`, or `archive`. Searching the
+  session archive is always explicit.
+- `maxResults` (optional): 1–10, overrides the configured `maxResults`.
+
+Results include source metadata (path, heading, line) and lexical/semantic
+scores when the service provides them, and are truncated to the configured
+context length.
 
 ## Configuration
 
@@ -29,7 +46,10 @@ The plugin is configured through OpenClaw's normal plugin configuration:
         "config": {
           "endpoint": "http://memory-service:8080",
           "timeoutMs": 1500,
-          "maxResults": 5
+          "maxResults": 5,
+          "scope": "all",
+          "maxQueryLength": 4000,
+          "maxContextLength": 12000
         }
       }
     }
