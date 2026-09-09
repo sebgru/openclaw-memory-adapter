@@ -19,6 +19,20 @@ indexer and never invokes indexing.
 - The prompt hook uses the `all` scope by default; the explicit tool supports
   `all`, `main`, and `archive`. It never calls `/index`.
 
+## Unified memory search tool
+
+The plugin registers an explicit `unified_memory_search` tool that agents can
+invoke directly:
+
+- `query` (required): question or search terms.
+- `scope` (optional): `all` (default), `main`, or `archive`. Searching the
+  session archive is always explicit.
+- `maxResults` (optional): 1–10, overrides the configured `maxResults`.
+
+Results include source metadata (path, heading, line) and lexical/semantic
+scores when the service provides them, and are truncated to the configured
+context length.
+
 ## Configuration
 
 The plugin is configured through OpenClaw's normal plugin configuration:
@@ -32,7 +46,10 @@ The plugin is configured through OpenClaw's normal plugin configuration:
         "config": {
           "endpoint": "http://memory-service:8080",
           "timeoutMs": 1500,
-          "maxResults": 5
+          "maxResults": 5,
+          "scope": "all",
+          "maxQueryLength": 4000,
+          "maxContextLength": 12000
         }
       }
     }

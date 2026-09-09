@@ -43,8 +43,8 @@ export default definePluginEntry({
         api.logger.warn?.(`memory-adapter: retrieval skipped: ${String(error)}`);
         return undefined;
       }
-      }, { timeoutMs: (config.timeoutMs ?? 1500) + 250 });
-    api.registerTool((ctx) => ({
+    }, { timeoutMs: (config.timeoutMs ?? 1500) + 250 });
+    api.registerTool((_ctx) => ({
       name: "unified_memory_search",
       label: "Unified Memory Search",
       description: "Search authoritative memory, output metadata, and optionally the session archive through the external memory service.",
