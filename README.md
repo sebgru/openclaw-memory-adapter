@@ -10,11 +10,14 @@ indexer and never invokes indexing.
 
 ## Behavior
 
-- Calls `POST {endpoint}/search` with `{ "q": "...", "limit": 5 }`.
+- Calls `GET {endpoint}/unified/search?q=...&scope=all&limit=5`.
+- Exposes the `unified_memory_search` tool for explicit searches across main
+  memory, registered artifacts, and the optional session archive.
 - Adds normalized results to `before_prompt_build` as reference context.
 - Uses a short timeout and fails closed when the service is unavailable.
 - Supports agent/chat allowlists.
-- Does not search archives automatically and never calls `/index`.
+- The prompt hook uses the `all` scope by default; the explicit tool supports
+  `all`, `main`, and `archive`. It never calls `/index`.
 
 ## Configuration
 
