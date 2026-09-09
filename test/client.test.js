@@ -305,11 +305,11 @@ test("prompt hook uses configured maxContextLength", async () => {
     globalThis.fetch = async () => ({
         ok: true,
         async json() {
-            return { results: [{ text: "kept" }, { text: "dropped because the limit is tiny" }] };
+            return { results: [{ text: "kept" }, { text: "dropped because the limit is tiny and this line is much longer than forty characters" }] };
         },
     });
     try {
-        const handlers = setup({ ...ENDPOINT, maxContextLength: 100 });
+        const handlers = setup({ ...ENDPOINT, maxContextLength: 40 });
         const result = await handlers.before_prompt_build({ prompt: "hello" }, CTX);
         assert.match(result.prependContext, /kept/);
         assert.doesNotMatch(result.prependContext, /dropped/);
