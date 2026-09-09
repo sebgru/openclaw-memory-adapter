@@ -43,7 +43,7 @@ test("searchUnified omits scope param when scope is not set", async () => {
         return { ok: true, async json() { return { results: [] }; } };
     };
     await searchUnified("where", { endpoint: "http://memory:8080", scope: "bogus" }, fetchImpl);
-    assert.equal(request.url, "http://memory:8080/unified/search?q=where&limit=5");
+    assert.equal(request.url, "http://memory:8080/unified/search?q=where&limit=5&scope=all");
 });
 
 test("searchService rejects empty queries", async () => {
@@ -243,6 +243,7 @@ function makeApi(config) {
         pluginConfig: config,
         logger: { warn: (msg) => { handlers.lastWarn = msg; } },
         on: (name, fn) => { handlers[name] = fn; },
+        registerTool: (factory, options) => { handlers.tool = typeof factory === "function" ? factory({ agentId: "a" }) : factory; handlers.toolOptions = options; },
     };
 }
 
