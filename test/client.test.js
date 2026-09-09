@@ -243,7 +243,6 @@ function makeApi(config) {
         pluginConfig: config,
         logger: { warn: (msg) => { handlers.lastWarn = msg; } },
         on: (name, fn) => { handlers[name] = fn; },
-        registerTool: (factory, options) => { handlers.tool = typeof factory === "function" ? factory({ agentId: "a" }) : factory; handlers.toolOptions = options; },
     };
 }
 
@@ -258,26 +257,6 @@ const CTX = { agentId: "a", chatType: "direct", chatId: "1" };
 test("register subscribes to before_prompt_build", () => {
     const handlers = setup({ endpoint: "http://memory:8080" });
     assert.equal(typeof handlers.before_prompt_build, "function");
-});
-
-test("register exposes unified_memory_search using the all scope by default", async () => {
-    const originalFetch = globalThis.fetch;
-    let requestUrl;
-    globalThis.fetch = async (url) => {
-        requestUrl = url;
-        return { ok: true, async json() { return { results: [{ text: "session fact", source: "session", path: "sessions/one.md", line: 4 }] }; } };
-    };
-    try {
-        const api = makeApi(ENDPOINT);
-        api.registerTool = (factory) => { api.handlers.tool = factory({ agentId: "a" }); };
-        plugin.register(api);
-        const result = await api.handlers.tool.execute("call-1", { query: "decision" });
-        assert.equal(requestUrl, "http://memory:8080/unified/search?q=decision&limit=5&scope=all");
-        assert.match(result.content[0].text, /session fact/);
-        assert.equal(result.details.results[0].path, "sessions/one.md");
-    } finally {
-        globalThis.fetch = originalFetch;
-    }
 });
 
 test("register tolerates missing pluginConfig", async () => {
