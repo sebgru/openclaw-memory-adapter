@@ -10,14 +10,20 @@ indexer and never invokes indexing.
 
 ## Behavior
 
-- Calls `GET {endpoint}/unified/search?q=...&scope=all&limit=5`.
+- Calls `GET {endpoint}/unified/search?q=...&scope=all&limit=5&profile=prompt`.
 - Exposes the `unified_memory_search` tool for explicit searches across main
-  memory, registered artifacts, and the optional session archive.
+  memory, registered artifacts, indexed documents, and the optional session
+  archive.
 - Adds normalized results to `before_prompt_build` as reference context.
+- Uses retrieval profiles: `prompt` (automatic hook, strict relevance) and
+  `tool` (explicit tool calls, caller-controlled scope).
+- Surfaces service warnings in tool output and logs; returns a bounded
+  failure notice when the service is unavailable.
 - Uses a short timeout and fails closed when the service is unavailable.
 - Supports agent/chat allowlists.
-- The prompt hook uses the `all` scope by default; the explicit tool supports
-  `all`, `main`, and `archive`. It never calls `/index`.
+- The prompt hook uses `scope=all` with `profile=prompt`; the explicit tool
+  uses `profile=tool` and supports scopes `all`, `main`, `archive`, and
+  `documents`. It never calls `/index`.
 
 ## Unified memory search tool
 
@@ -25,13 +31,15 @@ The plugin registers an explicit `unified_memory_search` tool that agents can
 invoke directly:
 
 - `query` (required): question or search terms.
-- `scope` (optional): `all` (default), `main`, or `archive`. Searching the
-  session archive is always explicit.
+- `scope` (optional): `all` (default), `main`, `archive`, or `documents`.
+  Searching the session archive or indexed documents is always explicit.
 - `maxResults` (optional): 1–10, overrides the configured `maxResults`.
 
-Results include source metadata (path, heading, line) and lexical/semantic
-scores when the service provides them, and are truncated to the configured
-context length.
+Results include source metadata (path, heading, line), relevance/lexical/
+semantic scores, provenance, and alternate provenance when the service
+provides them. Per-result text is bounded to `maxResultTextLength` and total
+injected context is bounded to `maxContextLength`. Service warnings are
+surfaced alongside results.
 
 ## Configuration
 
@@ -49,7 +57,8 @@ The plugin is configured through OpenClaw's normal plugin configuration:
           "maxResults": 5,
           "scope": "all",
           "maxQueryLength": 4000,
-          "maxContextLength": 12000
+          "maxContextLength": 12000,
+          "maxResultTextLength": 2000
         }
       }
     }

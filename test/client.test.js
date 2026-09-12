@@ -22,21 +22,21 @@ test("searches with the service GET query fields and normalizes results", async 
     assert.deepEqual(results, [{ text: "fact", source: "MEMORY.md", score: 0.9 }]);
 });
 
-test("searchUnified calls the unified endpoint with an explicit scope", async () => {
+test("searchUnified calls the unified endpoint with scope and profile", async () => {
     let request;
     const fetchImpl = async (url, options) => {
         request = { url, options };
         return { ok: true, async json() { return { results: [{ text: "archive fact", source: "archive", lexical_score: 0.2, semantic_score: 0.8 }] }; } };
     };
-    const results = await searchUnified("where", { endpoint: "http://memory:8080", scope: "archive" }, fetchImpl);
-    assert.equal(request.url, "http://memory:8080/unified/search?q=where&limit=5&scope=archive");
+    const { results } = await searchUnified("where", { endpoint: "http://memory:8080", scope: "archive", profile: "tool" }, fetchImpl);
+    assert.equal(request.url, "http://memory:8080/unified/search?q=where&limit=5&scope=archive&profile=tool");
     assert.equal(results[0].text, "archive fact");
     assert.equal(results[0].source, "archive");
     assert.equal(results[0].lexicalScore, 0.2);
     assert.equal(results[0].semanticScore, 0.8);
 });
 
-test("searchUnified omits scope param when scope is not set", async () => {
+test("searchUnified defaults scope to all and omits profile when unset", async () => {
     let request;
     const fetchImpl = async (url, options) => {
         request = { url, options };
@@ -44,6 +44,16 @@ test("searchUnified omits scope param when scope is not set", async () => {
     };
     await searchUnified("where", { endpoint: "http://memory:8080", scope: "bogus" }, fetchImpl);
     assert.equal(request.url, "http://memory:8080/unified/search?q=where&limit=5&scope=all");
+});
+
+test("searchUnified accepts documents scope", async () => {
+    let request;
+    const fetchImpl = async (url, options) => {
+        request = { url, options };
+        return { ok: true, async json() { return { results: [] }; } };
+    };
+    await searchUnified("where", { endpoint: "http://memory:8080", scope: "documents" }, fetchImpl);
+    assert.equal(request.url, "http://memory:8080/unified/search?q=where&limit=5&scope=documents");
 });
 
 test("searchService rejects empty queries", async () => {
@@ -76,6 +86,15 @@ test("normalizeConfig applies defaults and keeps valid integers", () => {
     assert.equal(invalid.maxResults, 5);
 });
 
+test("normalizeConfig validates scope and profile enums", () => {
+    assert.equal(normalizeConfig({ ...ENDPOINT, scope: "documents" }).scope, "documents");
+    assert.equal(normalizeConfig({ ...ENDPOINT, scope: "bogus" }).scope, "all");
+    assert.equal(normalizeConfig({ ...ENDPOINT, profile: "prompt" }).profile, "prompt");
+    assert.equal(normalizeConfig({ ...ENDPOINT, profile: "tool" }).profile, "tool");
+    assert.equal(normalizeConfig({ ...ENDPOINT, profile: "bogus" }).profile, undefined);
+    assert.equal(normalizeConfig(ENDPOINT).profile, undefined);
+});
+
 // ── normalizeResults ─────────────────────────────────────────────────────────
 
 test("normalizeResults handles array payloads, content field and missing score", () => {
@@ -84,7 +103,7 @@ test("normalizeResults handles array payloads, content field and missing score",
         { text: "b", source: "s" },
         { text: "c", score: "not-a-number" },
     ];
-    assert.deepEqual(normalizeResults(payload, 5), [
+    assert.deepEqual(normalizeResults(payload, 5).results, [
         { text: "a", source: "", score: undefined },
         { text: "b", source: "s", score: undefined },
         { text: "c", source: "", score: undefined },
@@ -93,24 +112,24 @@ test("normalizeResults handles array payloads, content field and missing score",
 
 test("normalizeResults respects maxResults and trims text", () => {
     const payload = { results: [{ text: "  spaced  " }, { text: "second" }] };
-    assert.deepEqual(normalizeResults(payload, 1), [
+    assert.deepEqual(normalizeResults(payload, 1).results, [
         { text: "spaced", source: "", score: undefined },
     ]);
 });
 
-test("normalizeResults returns [] for non-object and non-array payloads", () => {
-    assert.deepEqual(normalizeResults(null, 5), []);
-    assert.deepEqual(normalizeResults("nope", 5), []);
-    assert.deepEqual(normalizeResults({ results: "nope" }, 5), []);
-    assert.deepEqual(normalizeResults({ results: [42, [1], () => { }] }, 5), []);
+test("normalizeResults returns empty for non-object and non-array payloads", () => {
+    assert.deepEqual(normalizeResults(null, 5).results, []);
+    assert.deepEqual(normalizeResults("nope", 5).results, []);
+    assert.deepEqual(normalizeResults({ results: "nope" }, 5).results, []);
+    assert.deepEqual(normalizeResults({ results: [42, [1], () => { }] }, 5).results, []);
 });
 
 test("normalizeResults falls back to path and numeric score", () => {
     assert.deepEqual(
-        normalizeResults({ results: [{ text: "x", path: "p.md", score: 2 }] }, 5),
+        normalizeResults({ results: [{ text: "x", path: "p.md", score: 2 }] }, 5).results,
         [{ text: "x", source: "p.md", score: 2 }],
     );
-    assert.deepEqual(normalizeResults({ results: [{ text: "x", source: 7 }] }, 5)[0].source, "7");
+    assert.deepEqual(normalizeResults({ results: [{ text: "x", source: 7 }] }, 5).results[0].source, "7");
 });
 
 test("normalizeResults keeps rich metadata when present", () => {
@@ -124,22 +143,58 @@ test("normalizeResults keeps rich metadata when present", () => {
             line: 12,
             lexical_score: 0.1,
             semantic_score: 0.9,
+            relevance_score: 0.95,
+            provenance: "daily/2026-09-01.md",
+            alternate_provenance: "sessions/2026/09/abc.md",
         }]
-    }, 5);
+    }, 5).results;
     assert.equal(rich.id, "abc");
     assert.equal(rich.path, "docs/s.md");
     assert.equal(rich.heading, "Intro");
     assert.equal(rich.line, 12);
     assert.equal(rich.lexicalScore, 0.1);
     assert.equal(rich.semanticScore, 0.9);
+    assert.equal(rich.relevanceScore, 0.95);
+    assert.equal(rich.provenance, "daily/2026-09-01.md");
+    assert.equal(rich.alternateProvenance, "sessions/2026/09/abc.md");
 
-    const [partial] = normalizeResults({ results: [{ text: "partial", source: "only", lexical_score: "bad", semantic_score: 0.5 }] }, 5);
+    const [partial] = normalizeResults({ results: [{ text: "partial", source: "only", lexical_score: "bad", semantic_score: 0.5 }] }, 5).results;
     assert.equal(partial.lexicalScore, undefined);
     assert.equal(partial.semanticScore, 0.5);
+    assert.equal(partial.relevanceScore, undefined);
+    assert.equal(partial.provenance, undefined);
+    assert.equal(partial.alternateProvenance, undefined);
     assert.equal(partial.path, undefined);
     assert.equal(partial.heading, undefined);
     assert.equal(partial.line, undefined);
     assert.equal(partial.id, undefined);
+});
+
+test("normalizeResults extracts warnings from object payload", () => {
+    const { warnings, results } = normalizeResults({
+        results: [{ text: "ok" }],
+        warnings: ["index stale", "partial results"],
+    }, 5);
+    assert.deepEqual(warnings, ["index stale", "partial results"]);
+    assert.equal(results.length, 1);
+});
+
+test("normalizeResults bounds warnings and tolerates missing warnings", () => {
+    const many = normalizeResults({ results: [], warnings: ["a", "b", "c", "d", "e", "f"] }, 5);
+    assert.equal(many.warnings.length, 5);
+    const none = normalizeResults({ results: [] }, 5);
+    assert.deepEqual(none.warnings, []);
+    const arr = normalizeResults([{ text: "x" }], 5);
+    assert.deepEqual(arr.warnings, []);
+});
+
+test("normalizeResults bounds per-result text to maxResultTextLength", () => {
+    const long = "x".repeat(3000);
+    const [r] = normalizeResults({ results: [{ text: long }] }, 5, 100).results;
+    assert.equal(r.text.length, 101); // 100 + ellipsis
+    assert.ok(r.text.endsWith("…"));
+    const [short] = normalizeResults({ results: [{ text: "brief" }] }, 5, 100).results;
+    assert.equal(short.text, "brief");
 });
 
 test("searchMemory uses global fetch by default", async () => {
@@ -269,7 +324,7 @@ test("register tolerates missing pluginConfig", async () => {
     assert.equal(result, undefined);
 });
 
-test("tool honors configured scope and per-call overrides", async () => {
+test("tool honors configured scope and per-call overrides including documents", async () => {
     const originalFetch = globalThis.fetch;
     let requestUrl;
     globalThis.fetch = async (url) => {
@@ -279,9 +334,13 @@ test("tool honors configured scope and per-call overrides", async () => {
     try {
         const handlers = setup({ ...ENDPOINT, scope: "main" });
         await handlers.tool.execute("call-1", { query: "q" });
-        assert.equal(requestUrl, "http://memory:8080/unified/search?q=q&limit=5&scope=main");
+        assert.match(requestUrl, /scope=main/);
+        assert.match(requestUrl, /profile=tool/);
         await handlers.tool.execute("call-2", { query: "q", scope: "archive", maxResults: 3 });
-        assert.equal(requestUrl, "http://memory:8080/unified/search?q=q&limit=3&scope=archive");
+        assert.match(requestUrl, /scope=archive/);
+        assert.match(requestUrl, /limit=3/);
+        await handlers.tool.execute("call-3", { query: "q", scope: "documents" });
+        assert.match(requestUrl, /scope=documents/);
     } finally {
         globalThis.fetch = originalFetch;
     }
@@ -300,7 +359,129 @@ test("tool reports no results", async () => {
     }
 });
 
-test("prompt hook uses configured maxContextLength", async () => {
+test("prompt hook uses scope=all and profile=prompt", async () => {
+    const originalFetch = globalThis.fetch;
+    let requestUrl;
+    globalThis.fetch = async (url) => {
+        requestUrl = url;
+        return { ok: true, async json() { return { results: [{ text: "hook fact" }] }; } };
+    };
+    try {
+        const handlers = setup(ENDPOINT);
+        const result = await handlers.before_prompt_build({ prompt: "hello" }, CTX);
+        assert.match(requestUrl, /scope=all/);
+        assert.match(requestUrl, /profile=prompt/);
+        assert.ok(result.prependContext.startsWith("Relevant external memory"));
+    } finally {
+        globalThis.fetch = originalFetch;
+    }
+});
+
+test("tool uses profile=tool and lets caller pick scope", async () => {
+    const originalFetch = globalThis.fetch;
+    let requestUrl;
+    globalThis.fetch = async (url) => {
+        requestUrl = url;
+        return { ok: true, async json() { return { results: [{ text: "tool fact" }] }; } };
+    };
+    try {
+        const handlers = setup(ENDPOINT);
+        await handlers.tool.execute("call-1", { query: "q", scope: "main" });
+        assert.match(requestUrl, /scope=main/);
+        assert.match(requestUrl, /profile=tool/);
+        await handlers.tool.execute("call-2", { query: "q" });
+        assert.match(requestUrl, /scope=all/);
+        assert.match(requestUrl, /profile=tool/);
+    } finally {
+        globalThis.fetch = originalFetch;
+    }
+});
+
+test("hook surfaces warnings with results and still prepends context", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => ({
+        ok: true,
+        async json() {
+            return { results: [{ text: "fact", source: "MEMORY.md" }], warnings: ["index stale"] };
+        },
+    });
+    try {
+        const api = makeApi(ENDPOINT);
+        plugin.register(api);
+        const result = await api.handlers.before_prompt_build({ prompt: "hello" }, CTX);
+        assert.ok(result.prependContext.includes("fact"));
+        assert.match(api.handlers.lastWarn, /index stale/);
+    } finally {
+        globalThis.fetch = originalFetch;
+    }
+});
+
+test("hook returns failure notice on hard failure", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => { throw new Error("connection refused"); };
+    try {
+        const api = makeApi(ENDPOINT);
+        plugin.register(api);
+        const result = await api.handlers.before_prompt_build({ prompt: "hello" }, CTX);
+        assert.ok(result.prependContext);
+        assert.match(result.prependContext, /do not assert facts from memory/);
+        assert.match(api.handlers.lastWarn, /retrieval failed/);
+    } finally {
+        globalThis.fetch = originalFetch;
+    }
+});
+
+test("tool returns failure notice on hard failure", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => { throw new Error("connection refused"); };
+    try {
+        const handlers = setup(ENDPOINT);
+        const result = await handlers.tool.execute("call-1", { query: "q" });
+        assert.match(result.content[0].text, /do not assert facts from memory/);
+        assert.ok(result.details.error);
+    } finally {
+        globalThis.fetch = originalFetch;
+    }
+});
+
+test("tool surfaces warnings alongside results", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => ({
+        ok: true,
+        async json() {
+            return { results: [{ text: "fact" }], warnings: ["partial index", "degraded"] };
+        },
+    });
+    try {
+        const handlers = setup(ENDPOINT);
+        const result = await handlers.tool.execute("call-1", { query: "q" });
+        assert.match(result.content[0].text, /fact/);
+        assert.match(result.content[0].text, /Warnings: partial index; degraded/);
+        assert.deepEqual(result.details.warnings, ["partial index", "degraded"]);
+    } finally {
+        globalThis.fetch = originalFetch;
+    }
+});
+
+test("tool surfaces warnings even with no results", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => ({
+        ok: true,
+        async json() {
+            return { results: [], warnings: ["index empty"] };
+        },
+    });
+    try {
+        const handlers = setup(ENDPOINT);
+        const result = await handlers.tool.execute("call-1", { query: "q" });
+        assert.match(result.content[0].text, /No memory results/);
+        assert.match(result.content[0].text, /Warnings: index empty/);
+    } finally {
+        globalThis.fetch = originalFetch;
+    }
+});
+
+test("prompt hook caps total context to maxContextLength", async () => {
     const originalFetch = globalThis.fetch;
     globalThis.fetch = async () => ({
         ok: true,
@@ -313,6 +494,23 @@ test("prompt hook uses configured maxContextLength", async () => {
         const result = await handlers.before_prompt_build({ prompt: "hello" }, CTX);
         assert.match(result.prependContext, /kept/);
         assert.doesNotMatch(result.prependContext, /dropped/);
+    } finally {
+        globalThis.fetch = originalFetch;
+    }
+});
+
+test("empty retrieval results do not prepend context", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => ({
+        ok: true,
+        async json() {
+            return { results: [] };
+        },
+    });
+    try {
+        const handlers = setup(ENDPOINT);
+        const result = await handlers.before_prompt_build({ prompt: "hello" }, CTX);
+        assert.equal(result, undefined);
     } finally {
         globalThis.fetch = originalFetch;
     }
@@ -363,22 +561,6 @@ test("successful retrieval prepends formatted context", async () => {
     }
 });
 
-test("failed retrieval warns and fails closed", async () => {
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = async () => {
-        throw new Error("connection refused");
-    };
-    try {
-        const api = makeApi(ENDPOINT);
-        plugin.register(api);
-        const result = await api.handlers.before_prompt_build({ prompt: "hello" }, CTX);
-        assert.equal(result, undefined);
-        assert.match(api.handlers.lastWarn, /retrieval skipped/);
-    } finally {
-        globalThis.fetch = originalFetch;
-    }
-});
-
 test("missing logger.warn is tolerated", async () => {
     const originalFetch = globalThis.fetch;
     globalThis.fetch = async () => {
@@ -389,25 +571,43 @@ test("missing logger.warn is tolerated", async () => {
         api.logger = {};
         plugin.register(api);
         const result = await api.handlers.before_prompt_build({ prompt: "hello" }, CTX);
-        assert.equal(result, undefined);
+        assert.ok(result.prependContext);
+        assert.match(result.prependContext, /do not assert facts from memory/);
     } finally {
         globalThis.fetch = originalFetch;
     }
 });
 
-test("empty retrieval results do not prepend context", async () => {
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = async () => ({
+test("provenance and alternate_provenance pass through to normalized results", async () => {
+    const fetchImpl = async () => ({
         ok: true,
         async json() {
-            return { results: [] };
+            return {
+                results: [{
+                    text: "proven fact",
+                    source: "memory",
+                    path: "MEMORY.md",
+                    relevance_score: 0.92,
+                    provenance: "memory/2026-09-01.md",
+                    alternate_provenance: "sessions/2026/09/abc.md",
+                }],
+            };
         },
     });
-    try {
-        const handlers = setup(ENDPOINT);
-        const result = await handlers.before_prompt_build({ prompt: "hello" }, CTX);
-        assert.equal(result, undefined);
-    } finally {
-        globalThis.fetch = originalFetch;
-    }
+    const { results } = await searchUnified("q", ENDPOINT, fetchImpl);
+    assert.equal(results[0].relevanceScore, 0.92);
+    assert.equal(results[0].provenance, "memory/2026-09-01.md");
+    assert.equal(results[0].alternateProvenance, "sessions/2026/09/abc.md");
+});
+
+test("searchUnified bounds query length via config", async () => {
+    let request;
+    const fetchImpl = async (url) => {
+        request = { url };
+        return { ok: true, async json() { return { results: [] }; } };
+    };
+    const longQuery = "a".repeat(5000);
+    await searchUnified(longQuery, { ...ENDPOINT, maxQueryLength: 200 }, fetchImpl);
+    const url = new URL(request.url);
+    assert.equal(url.searchParams.get("q").length, 200);
 });
