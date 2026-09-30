@@ -13,7 +13,8 @@
     "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind",
     "mounts": [
         "source=${localEnv:HOME}${localEnv:USERPROFILE}/.gitconfig,target=/tmp/host-gitconfig,type=bind,readonly",
-        "source=${localEnv:HOME}${localEnv:USERPROFILE}/.ssh,target=/tmp/host-ssh,type=bind,readonly"
+        "source=${localEnv:HOME}${localEnv:USERPROFILE}/.ssh,target=/tmp/host-ssh,type=bind,readonly",
+        "source=${localEnv:HOME}${localEnv:USERPROFILE}/.config/gh,target=/tmp/host-gh-config,type=bind,readonly"
     ],
     "postCreateCommand": "bash .devcontainer/setup.sh",
     "customizations": {
@@ -24,7 +25,8 @@
                 "ms-vscode.vscode-typescript-next",
                 "tamasfe.even-better-toml",
                 "github.vscode-github-actions",
-                "streetsidesoftware.code-spell-checker"
+                "streetsidesoftware.code-spell-checker",
+                "anthropic.claude-code"
             ],
             "settings": {
                 "terminal.integrated.defaultProfile.linux": "zsh",
