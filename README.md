@@ -58,13 +58,95 @@ The plugin is configured through OpenClaw's normal plugin configuration:
           "scope": "all",
           "maxQueryLength": 4000,
           "maxContextLength": 12000,
-          "maxResultTextLength": 2000
+          "maxResultTextLength": 2000,
+          "turnReceipts": false
         }
       }
     }
   }
 }
 ```
+
+## Per-turn receipts (`turnReceipts`, default off)
+
+`turnReceipts` is a named, default-off flag. With it unset or `false`, the
+`before_prompt_build` hook keeps its original behavior exactly: zero results
+prepend nothing, and a hard failure prepends the fixed unavailable notice.
+
+When `turnReceipts: true`, every eligible turn produces a versioned, ephemeral
+receipt (`src/receipt.js`, `schemaVersion: 2`) that classifies the single
+`scope=all` retrieval call as one of:
+
+- **found** — results were returned. The existing formatted context is
+  prepended, but "found" is no longer silent-by-default: if source coverage
+  is unverified (see below) or nothing retrieved was actually attached to
+  the turn, a notice is appended alongside the context instead of being
+  suppressed.
+- **absent** — the search completed successfully with zero results. This no
+  longer returns silently: the model receives an explicit notice that
+  retrieval was attempted and found nothing, so it does not have to guess
+  whether memory was searched.
+- **unavailable** — the call threw or timed out. This is never reported as
+  absence; the model receives the unavailable notice and is told not to
+  assert memory-backed facts.
+- **conflicting** — only reachable if the memory service itself returns a
+  `conflicts` array in its JSON response. The adapter does not infer
+  conflicts from result text; it only passes through what the service
+  reports.
+- **not searched** — sources outside the requested scope. The automatic hook
+  always requests `scope=all`, so this is only populated for the explicit
+  `unified_memory_search` tool when a caller narrows `scope`.
+
+### Partial/unknown source coverage
+
+The memory service's normalized response carries only a flat `warnings:
+string[]` array — it never reports which individual source (main, archive,
+documents) a warning applies to (see `normalizeResults` in `src/client.js`).
+So whenever the service returns one or more warnings for a `scope=all` (or
+narrower) call, the receipt cannot claim that every requested source was
+fully searched. In that case `sources.searched` stays empty and the affected
+sources move into `sources.unknownCoverage` instead — regardless of whether
+the receipt's status is `found`, `absent`, or `conflicting`. The model-facing
+notice names this as unverified coverage and reports the warning count. The
+notice itself omits warning text; sanitized warning
+details remain available in the explicit tool response, capped at 256
+characters per entry. Warning details are never copied into logs.
+
+### Zero included content
+
+A result can be returned by the service (`resultCount > 0`) yet still produce
+no usable context, e.g. every candidate line exceeds `maxContextLength` and
+gets dropped before anything is included. The receipt tracks this separately
+as `includedCount` / `noContentIncluded`; when it happens, the adapter does
+not prepend the (effectively empty) formatted header and instead tells the
+model explicitly that no usable memory context was attached this turn.
+
+The receipt carries a turn ID (the harness's `currentUserMessageId` or
+`runId` when available, otherwise a generated UUID), status, bounded source
+lists (including `unknownCoverage`), up to five sanitized warnings and
+conflicts capped at 256 characters each, and a turn ID capped at 128
+characters. It contains no raw query or result text, plus `includedCount`, a
+truncation flag, and start/end timestamps. It is built in memory for the
+current hook invocation only and is never persisted to a database.
+
+### Execution trace
+
+`before_prompt_build` can only return `prependContext` (and a few sibling
+fields) — there is no supported field for returning structured metadata from
+that hook. So when `turnReceipts: true`, the adapter also emits one bounded,
+JSON-formatted trace line per turn through the plugin's scoped logger
+(`api.logger.debug`): `turnId`, `schemaVersion`, `status`, `resultCount`,
+`includedCount`, `truncated`, `partialCoverage`, bounded `sources`, and
+`timing`. It deliberately excludes warnings/conflicts text and all result
+content. This is the supported, documented mechanism available for making
+the receipt observable to runtime acceptance checks or diagnostics without a
+parallel receipt database; with `turnReceipts` off (the default), no such
+line is logged and behavior is unchanged.
+
+Cross-plugin receipt consumption (the orchestration plugin reading this
+receipt) is still explicitly out of scope for this change and remains an
+open contract question — see the architecture proposal, §5A and open
+decision 2.
 
 The endpoint is runtime configuration; no deployment-specific hostname is
 required by this repository.

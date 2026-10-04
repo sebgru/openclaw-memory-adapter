@@ -17,7 +17,8 @@
       "enabled": { "type": "boolean" },
       "agents": { "type": "array", "items": { "type": "string" } },
       "allowedChatTypes": { "type": "array", "items": { "type": "string" } },
-      "allowedChatIds": { "type": "array", "items": { "type": "string" } }
+      "allowedChatIds": { "type": "array", "items": { "type": "string" } },
+      "turnReceipts": { "type": "boolean", "default": false }
     }
   }
 }

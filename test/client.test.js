@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+    buildMemoryContextDetails,
     formatMemoryContext,
     normalizeConfig,
     normalizeResults,
@@ -170,6 +171,20 @@ test("normalizeResults keeps rich metadata when present", () => {
     assert.equal(partial.id, undefined);
 });
 
+test("normalizeResults extracts conflicts from object payload and bounds them", () => {
+    const { conflicts } = normalizeResults({
+        results: [{ text: "ok" }],
+        conflicts: ["a", "b", "c", "d", "e", "f"],
+    }, 5);
+    assert.equal(conflicts.length, 5);
+});
+
+test("normalizeResults tolerates missing conflicts and array payloads", () => {
+    assert.deepEqual(normalizeResults({ results: [] }, 5).conflicts, []);
+    assert.deepEqual(normalizeResults([{ text: "x" }], 5).conflicts, []);
+    assert.deepEqual(normalizeResults("nope", 5).conflicts, []);
+});
+
 test("normalizeResults extracts warnings from object payload", () => {
     const { warnings, results } = normalizeResults({
         results: [{ text: "ok" }],
@@ -186,6 +201,17 @@ test("normalizeResults bounds warnings and tolerates missing warnings", () => {
     assert.deepEqual(none.warnings, []);
     const arr = normalizeResults([{ text: "x" }], 5);
     assert.deepEqual(arr.warnings, []);
+});
+
+test("normalizeResults sanitizes and caps each service warning and conflict", () => {
+    const result = normalizeResults({
+        results: [],
+        warnings: [`first\nline${"x".repeat(300)}`],
+        conflicts: ["left\u0000right"],
+    }, 5);
+    assert.equal(result.warnings[0].length, 256);
+    assert.ok(result.warnings[0].startsWith("first line"));
+    assert.deepEqual(result.conflicts, ["left right"]);
 });
 
 test("normalizeResults bounds per-result text to maxResultTextLength", () => {
@@ -280,6 +306,26 @@ test("formatMemoryContext includes path and line location", () => {
     assert.match(context, /located \(s\.md \/ docs\/s\.md \/ line 7\)/);
 });
 
+test("buildMemoryContextDetails reports not-truncated and includedCount for empty results", () => {
+    assert.deepEqual(buildMemoryContextDetails([]), { text: "", truncated: false, includedCount: 0 });
+});
+
+test("buildMemoryContextDetails reports truncated=false and includedCount when everything fits", () => {
+    const details = buildMemoryContextDetails([{ text: "first" }, { text: "second" }]);
+    assert.equal(details.truncated, false);
+    assert.equal(details.includedCount, 2);
+    assert.match(details.text, /1\. first/);
+});
+
+test("buildMemoryContextDetails reports truncated=true and the included count when a line is dropped", () => {
+    const details = buildMemoryContextDetails([
+        { text: "short" },
+        { text: "this line is far too long to fit" },
+    ], 40);
+    assert.equal(details.truncated, true);
+    assert.equal(details.includedCount, 1);
+});
+
 test("formatMemoryContext truncates at maxLength", () => {
     const context = formatMemoryContext([
         { text: "short" },
@@ -293,10 +339,14 @@ test("formatMemoryContext truncates at maxLength", () => {
 
 function makeApi(config) {
     const handlers = {};
+    handlers.debugLogs = [];
     return {
         handlers,
         pluginConfig: config,
-        logger: { warn: (msg) => { handlers.lastWarn = msg; } },
+        logger: {
+            warn: (msg) => { handlers.lastWarn = msg; },
+            debug: (msg) => { handlers.debugLogs.push(msg); handlers.lastDebug = msg; },
+        },
         on: (name, fn) => { handlers[name] = fn; },
         registerTool: (factory, options) => { handlers.tool = typeof factory === "function" ? factory({ agentId: "a" }) : factory; handlers.toolOptions = options; },
     };
@@ -309,6 +359,14 @@ function setup(config) {
 }
 
 const CTX = { agentId: "a", chatType: "direct", chatId: "1" };
+
+test("plugin declares and registers unified_memory_search as a callable tool", () => {
+    const handlers = setup(ENDPOINT);
+    assert.deepEqual(plugin.contracts.tools, ["unified_memory_search"]);
+    assert.equal(handlers.toolOptions.name, "unified_memory_search");
+    assert.equal(handlers.tool.name, "unified_memory_search");
+    assert.equal(typeof handlers.tool.execute, "function");
+});
 
 test("register subscribes to before_prompt_build", () => {
     const handlers = setup({ endpoint: "http://memory:8080" });
@@ -410,7 +468,8 @@ test("hook surfaces warnings with results and still prepends context", async () 
         plugin.register(api);
         const result = await api.handlers.before_prompt_build({ prompt: "hello" }, CTX);
         assert.ok(result.prependContext.includes("fact"));
-        assert.match(api.handlers.lastWarn, /index stale/);
+        assert.match(api.handlers.lastWarn, /1 warning/);
+        assert.doesNotMatch(api.handlers.lastWarn, /index stale/);
     } finally {
         globalThis.fetch = originalFetch;
     }
@@ -439,6 +498,23 @@ test("tool returns failure notice on hard failure", async () => {
         const result = await handlers.tool.execute("call-1", { query: "q" });
         assert.match(result.content[0].text, /do not assert facts from memory/);
         assert.ok(result.details.error);
+    } finally {
+        globalThis.fetch = originalFetch;
+    }
+});
+
+test("tool passes through service-reported conflicts in details", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => ({
+        ok: true,
+        async json() {
+            return { results: [{ text: "fact" }], conflicts: ["fact vs other fact"] };
+        },
+    });
+    try {
+        const handlers = setup(ENDPOINT);
+        const result = await handlers.tool.execute("call-1", { query: "q" });
+        assert.deepEqual(result.details.conflicts, ["fact vs other fact"]);
     } finally {
         globalThis.fetch = originalFetch;
     }
@@ -543,6 +619,89 @@ test("listAllows passes for missing, empty and matching lists", () => {
     assert.ok(!listAllows(["a"], undefined));
 });
 
+// ── turnReceipts flag (default off; §5A per-turn receipt behavior) ─────────
+
+test("turnReceipts off (default): zero-result turns remain silent, unchanged from legacy behavior", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => ({ ok: true, async json() { return { results: [] }; } });
+    try {
+        const handlers = setup(ENDPOINT);
+        const result = await handlers.before_prompt_build({ prompt: "hello" }, CTX);
+        assert.equal(result, undefined);
+    } finally {
+        globalThis.fetch = originalFetch;
+    }
+});
+
+test("turnReceipts on: zero-result turns produce an explicit absent notice instead of silence", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => ({ ok: true, async json() { return { results: [] }; } });
+    try {
+        const handlers = setup({ ...ENDPOINT, turnReceipts: true });
+        const result = await handlers.before_prompt_build({ prompt: "hello" }, CTX);
+        assert.ok(result?.prependContext);
+        assert.match(result.prependContext, /verified absence/);
+    } finally {
+        globalThis.fetch = originalFetch;
+    }
+});
+
+test("turnReceipts on: found results still prepend plain context with no extra notice", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => ({ ok: true, async json() { return { results: [{ text: "fact" }] }; } });
+    try {
+        const handlers = setup({ ...ENDPOINT, turnReceipts: true });
+        const result = await handlers.before_prompt_build({ prompt: "hello" }, CTX);
+        assert.ok(result.prependContext.startsWith("Relevant external memory"));
+        assert.doesNotMatch(result.prependContext, /verified absence/);
+    } finally {
+        globalThis.fetch = originalFetch;
+    }
+});
+
+test("turnReceipts on: service-reported conflicts are surfaced alongside the retrieved context", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => ({
+        ok: true,
+        async json() { return { results: [{ text: "fact a" }], conflicts: ["fact a vs fact b"] }; },
+    });
+    try {
+        const handlers = setup({ ...ENDPOINT, turnReceipts: true });
+        const result = await handlers.before_prompt_build({ prompt: "hello" }, CTX);
+        assert.match(result.prependContext, /fact a/);
+        assert.match(result.prependContext, /conflicting evidence/);
+    } finally {
+        globalThis.fetch = originalFetch;
+    }
+});
+
+test("turnReceipts on: hard failure is surfaced as unavailable, not absence", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => { throw new Error("connection refused"); };
+    try {
+        const handlers = setup({ ...ENDPOINT, turnReceipts: true });
+        const result = await handlers.before_prompt_build({ prompt: "hello" }, CTX);
+        assert.match(result.prependContext, /retrieval unavailable/);
+        assert.doesNotMatch(result.prependContext, /verified absence/);
+    } finally {
+        globalThis.fetch = originalFetch;
+    }
+});
+
+test("turnReceipts on: prefers event.currentUserMessageId, falls back to ctx.runId, then generates an id", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => ({ ok: true, async json() { return { results: [] }; } });
+    try {
+        const handlers = setup({ ...ENDPOINT, turnReceipts: true });
+        // No throw means turn-id derivation succeeded for all branches below.
+        await handlers.before_prompt_build({ prompt: "hello", currentUserMessageId: "msg-1" }, CTX);
+        await handlers.before_prompt_build({ prompt: "hello" }, { ...CTX, runId: "run-1" });
+        await handlers.before_prompt_build({ prompt: "hello" }, CTX);
+    } finally {
+        globalThis.fetch = originalFetch;
+    }
+});
+
 test("successful retrieval prepends formatted context", async () => {
     const originalFetch = globalThis.fetch;
     globalThis.fetch = async () => ({
@@ -598,6 +757,104 @@ test("provenance and alternate_provenance pass through to normalized results", a
     assert.equal(results[0].relevanceScore, 0.92);
     assert.equal(results[0].provenance, "memory/2026-09-01.md");
     assert.equal(results[0].alternateProvenance, "sessions/2026/09/abc.md");
+});
+
+// ── §5A follow-up: honest partial coverage, zero-included-content, trace ────
+
+test("turnReceipts on: scope=all with warnings surfaces partial coverage alongside found results instead of hiding them", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => ({
+        ok: true,
+        async json() {
+            return { results: [{ text: "fact", source: "MEMORY.md" }], warnings: ["archive index unavailable"] };
+        },
+    });
+    try {
+        const api = makeApi({ ...ENDPOINT, turnReceipts: true });
+        plugin.register(api);
+        const result = await api.handlers.before_prompt_build({ prompt: "hello" }, CTX);
+        assert.match(result.prependContext, /fact/);
+        assert.match(result.prependContext, /coverage for this turn is unverified/);
+        assert.match(result.prependContext, /service reported 1 warning/);
+        assert.doesNotMatch(result.prependContext, /archive index unavailable/);
+    } finally {
+        globalThis.fetch = originalFetch;
+    }
+});
+
+test("turnReceipts on: zero-length context budget drops header-only output and tells the model nothing usable was attached", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => ({
+        ok: true,
+        async json() {
+            return { results: [{ text: "this single result is far too long to fit inside a tiny context budget" }] };
+        },
+    });
+    try {
+        const handlers = setup({ ...ENDPOINT, turnReceipts: true, maxContextLength: 10 });
+        const result = await handlers.before_prompt_build({ prompt: "hello" }, CTX);
+        assert.ok(result?.prependContext);
+        assert.doesNotMatch(result.prependContext, /Relevant external memory/);
+        assert.match(result.prependContext, /none of the retrieved content could be attached/);
+    } finally {
+        globalThis.fetch = originalFetch;
+    }
+});
+
+test("turnReceipts on: emits a bounded JSON receipt trace via the plugin logger with no raw query/result text", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => ({
+        ok: true,
+        async json() {
+            return { results: [{ text: "super secret memory content" }] };
+        },
+    });
+    try {
+        const api = makeApi({ ...ENDPOINT, turnReceipts: true });
+        plugin.register(api);
+        await api.handlers.before_prompt_build({ prompt: "what did we decide", currentUserMessageId: "msg-7" }, CTX);
+        assert.equal(api.handlers.debugLogs.length, 1);
+        const [line] = api.handlers.debugLogs;
+        assert.match(line, /^memory-adapter: receipt /);
+        const payload = JSON.parse(line.slice("memory-adapter: receipt ".length));
+        assert.equal(payload.turnId, "msg-7");
+        assert.equal(payload.status, "found");
+        assert.ok(Number.isInteger(payload.schemaVersion));
+        assert.ok(payload.timing);
+        assert.deepEqual(Object.keys(payload.sources).sort(), ["absent", "notSearched", "searched", "unavailable", "unknownCoverage"]);
+        assert.doesNotMatch(line, /super secret memory content/);
+        assert.doesNotMatch(line, /what did we decide/);
+    } finally {
+        globalThis.fetch = originalFetch;
+    }
+});
+
+test("turnReceipts on: receipt trace is also emitted on hard failure", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => { throw new Error("connection refused"); };
+    try {
+        const api = makeApi({ ...ENDPOINT, turnReceipts: true });
+        plugin.register(api);
+        await api.handlers.before_prompt_build({ prompt: "hello" }, CTX);
+        assert.equal(api.handlers.debugLogs.length, 1);
+        const payload = JSON.parse(api.handlers.debugLogs[0].slice("memory-adapter: receipt ".length));
+        assert.equal(payload.status, "unavailable");
+    } finally {
+        globalThis.fetch = originalFetch;
+    }
+});
+
+test("turnReceipts off: no receipt trace is logged (legacy behavior untouched)", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => ({ ok: true, async json() { return { results: [{ text: "fact" }] }; } });
+    try {
+        const api = makeApi(ENDPOINT);
+        plugin.register(api);
+        await api.handlers.before_prompt_build({ prompt: "hello" }, CTX);
+        assert.deepEqual(api.handlers.debugLogs, []);
+    } finally {
+        globalThis.fetch = originalFetch;
+    }
 });
 
 test("searchUnified bounds query length via config", async () => {

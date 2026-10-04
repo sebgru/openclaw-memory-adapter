@@ -1,7 +1,16 @@
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
-import { formatMemoryContext, searchUnified } from "./src/client.js";
+import { buildMemoryContextDetails, formatMemoryContext, searchUnified } from "./src/client.js";
+import { buildReceipt, formatReceiptNotice, receiptTraceSummary } from "./src/receipt.js";
 
 const FAILURE_NOTICE = "Memory retrieval unavailable; do not assert facts from memory without verifying through another source.";
+
+function nextTurnId(event, ctx) {
+  return (
+    (typeof event?.currentUserMessageId === "string" && event.currentUserMessageId) ||
+    (typeof ctx?.runId === "string" && ctx.runId) ||
+    globalThis.crypto.randomUUID()
+  );
+}
 
 const UnifiedMemorySearchParameters = {
   type: "object",
@@ -16,6 +25,20 @@ const UnifiedMemorySearchParameters = {
 
 function listAllows(list, value) {
   return !Array.isArray(list) || list.length === 0 || (value && list.includes(value));
+}
+
+/**
+ * Emits a bounded, non-sensitive JSON trace line for the receipt (turnId,
+ * schema version, status, timing, bounded source identifiers - no raw query
+ * or result text). This is the only observable execution trace: the plugin
+ * API's before_prompt_build hook has no documented field for returning
+ * structured metadata (only prependContext/appendContext/systemPrompt/
+ * prependSystemContext/appendSystemContext/toolsAllow), so the scoped
+ * plugin logger is the supported surface for making the trace available to
+ * runtime acceptance/diagnostics without a parallel receipt database.
+ */
+function logReceiptTrace(api, receipt) {
+  api.logger?.debug?.(`memory-adapter: receipt ${JSON.stringify(receiptTraceSummary(receipt))}`);
 }
 
 export { eligible, listAllows };
@@ -37,16 +60,45 @@ export default definePluginEntry({
     const config = api.pluginConfig ?? {};
     api.on("before_prompt_build", async (event, ctx) => {
       if (!eligible(event, ctx, config)) return undefined;
+      const turnReceipts = config.turnReceipts === true;
+      const scope = "all";
+      const turnId = turnReceipts ? nextTurnId(event, ctx) : undefined;
+      const startedAt = turnReceipts ? Date.now() : undefined;
       try {
-        const { results, warnings } = await searchUnified(event.prompt, { ...config, scope: "all", profile: "prompt" });
+        const { results, warnings, conflicts } = await searchUnified(event.prompt, { ...config, scope, profile: "prompt" });
         if (warnings?.length) {
-          api.logger.warn?.(`memory-adapter: ${warnings.slice(0, 3).join("; ")}`);
+          api.logger.warn?.(`memory-adapter: service reported ${warnings.length} warning(s); details omitted`);
         }
-        const context = formatMemoryContext(results, Number.isInteger(config.maxContextLength) ? config.maxContextLength : undefined);
-        return context ? { prependContext: context } : undefined;
+        const maxContextLength = Number.isInteger(config.maxContextLength) ? config.maxContextLength : undefined;
+        if (!turnReceipts) {
+          const context = formatMemoryContext(results, maxContextLength);
+          return context ? { prependContext: context } : undefined;
+        }
+        const { text: context, truncated, includedCount } = buildMemoryContextDetails(results, maxContextLength);
+        const receipt = buildReceipt({
+          turnId,
+          scope,
+          startedAt,
+          endedAt: Date.now(),
+          resultCount: results.length,
+          includedCount,
+          warnings,
+          conflicts,
+          truncated,
+        });
+        logReceiptTrace(api, receipt);
+        const notice = formatReceiptNotice(receipt);
+        const hasUsableContext = includedCount > 0;
+        const prependContext = [hasUsableContext ? context : "", notice].filter(Boolean).join("\n\n");
+        return { prependContext };
       } catch (error) {
         api.logger.warn?.(`memory-adapter: retrieval failed: ${String(error)}`);
-        return { prependContext: `Memory retrieval unavailable; do not assert facts from memory without verifying through another source.` };
+        if (!turnReceipts) {
+          return { prependContext: FAILURE_NOTICE };
+        }
+        const receipt = buildReceipt({ turnId, scope, startedAt, endedAt: Date.now(), error: true });
+        logReceiptTrace(api, receipt);
+        return { prependContext: formatReceiptNotice(receipt) };
       }
     }, { timeoutMs: (config.timeoutMs ?? 1500) + 250 });
     api.registerTool((_ctx) => ({
@@ -57,7 +109,7 @@ export default definePluginEntry({
       execute: async (_toolCallId, params) => {
         const scope = params.scope ?? config.scope ?? "all";
         try {
-          const { results, warnings } = await searchUnified(params.query, { ...config, scope, profile: "tool", maxResults: params.maxResults ?? config.maxResults });
+          const { results, warnings, conflicts } = await searchUnified(params.query, { ...config, scope, profile: "tool", maxResults: params.maxResults ?? config.maxResults });
           const textParts = [];
           if (results.length === 0) {
             textParts.push("No memory results.");
@@ -69,7 +121,7 @@ export default definePluginEntry({
           }
           return {
             content: [{ type: "text", text: textParts.join("\n") }],
-            details: { scope, results, warnings },
+            details: { scope, results, warnings, conflicts },
           };
         } catch (error) {
           return {

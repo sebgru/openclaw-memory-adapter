@@ -15,7 +15,7 @@
     "test": "node --import ./test/stubs/loader-register.mjs --test",
     "test:coverage": "c8 --100 node --import ./test/stubs/loader-register.mjs --test",
     "lint": "eslint .",
-    "check": "node --check index.js && node --check src/client.js",
+    "check": "node --check index.js && node --check src/client.js && node --check src/receipt.js",
     "pack:plugin": "npm pack",
     "validate:plugin": "openclaw plugins validate --root . --entry ./index.js"
   },
