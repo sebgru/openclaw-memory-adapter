@@ -58,13 +58,56 @@ The plugin is configured through OpenClaw's normal plugin configuration:
           "scope": "all",
           "maxQueryLength": 4000,
           "maxContextLength": 12000,
-          "maxResultTextLength": 2000
+          "maxResultTextLength": 2000,
+          "turnReceipts": false
         }
       }
     }
   }
 }
 ```
+
+## Per-turn receipts (`turnReceipts`, default off)
+
+`turnReceipts` is a named, default-off flag. With it unset or `false`, the
+`before_prompt_build` hook keeps its original behavior exactly: zero results
+prepend nothing, and a hard failure prepends the fixed unavailable notice.
+
+When `turnReceipts: true`, every eligible turn produces a versioned, ephemeral
+receipt (`src/receipt.js`, `schemaVersion: 1`) that classifies the single
+`scope=all` retrieval call as one of:
+
+- **found** — results were returned; the existing formatted context is
+  prepended as before, with no extra notice.
+- **absent** — the search completed successfully with zero results. This no
+  longer returns silently: the model receives an explicit notice that
+  retrieval was attempted and found nothing, so it does not have to guess
+  whether memory was searched.
+- **unavailable** — the call threw or timed out. This is never reported as
+  absence; the model receives the unavailable notice and is told not to
+  assert memory-backed facts.
+- **conflicting** — only reachable if the memory service itself returns a
+  `conflicts` array in its JSON response. The adapter does not infer
+  conflicts from result text; it only passes through what the service
+  reports.
+- **not searched** — sources outside the requested scope. The automatic hook
+  always requests `scope=all`, so this is only populated for the explicit
+  `unified_memory_search` tool when a caller narrows `scope`.
+
+The receipt carries a turn ID (the harness's `currentUserMessageId` or
+`runId` when available, otherwise a generated UUID), status, bounded source
+lists, bounded/truncated warnings and conflicts (never raw query or result
+text), a truncation flag, and start/end timestamps. It is built in memory for
+the current hook invocation only — it is never written to a file, log, or
+database, and the plugin remains otherwise read-only against the memory
+service.
+
+`before_prompt_build` can only return `prependContext` (and a few sibling
+fields); there is no supported side channel to hand a structured receipt to
+another plugin in this phase. Cross-plugin receipt consumption (the
+orchestration plugin reading this receipt) is explicitly out of scope for
+this change and remains an open contract question — see the architecture
+proposal, §5A and open decision 2.
 
 The endpoint is runtime configuration; no deployment-specific hostname is
 required by this repository.
