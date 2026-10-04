@@ -203,6 +203,17 @@ test("normalizeResults bounds warnings and tolerates missing warnings", () => {
     assert.deepEqual(arr.warnings, []);
 });
 
+test("normalizeResults sanitizes and caps each service warning and conflict", () => {
+    const result = normalizeResults({
+        results: [],
+        warnings: [`first\nline${"x".repeat(300)}`],
+        conflicts: ["left\u0000right"],
+    }, 5);
+    assert.equal(result.warnings[0].length, 256);
+    assert.ok(result.warnings[0].startsWith("first line"));
+    assert.deepEqual(result.conflicts, ["left right"]);
+});
+
 test("normalizeResults bounds per-result text to maxResultTextLength", () => {
     const long = "x".repeat(3000);
     const [r] = normalizeResults({ results: [{ text: long }] }, 5, 100).results;
@@ -457,7 +468,8 @@ test("hook surfaces warnings with results and still prepends context", async () 
         plugin.register(api);
         const result = await api.handlers.before_prompt_build({ prompt: "hello" }, CTX);
         assert.ok(result.prependContext.includes("fact"));
-        assert.match(api.handlers.lastWarn, /index stale/);
+        assert.match(api.handlers.lastWarn, /1 warning/);
+        assert.doesNotMatch(api.handlers.lastWarn, /index stale/);
     } finally {
         globalThis.fetch = originalFetch;
     }
@@ -763,7 +775,8 @@ test("turnReceipts on: scope=all with warnings surfaces partial coverage alongsi
         const result = await api.handlers.before_prompt_build({ prompt: "hello" }, CTX);
         assert.match(result.prependContext, /fact/);
         assert.match(result.prependContext, /coverage for this turn is unverified/);
-        assert.match(result.prependContext, /archive index unavailable/);
+        assert.match(result.prependContext, /service reported 1 warning/);
+        assert.doesNotMatch(result.prependContext, /archive index unavailable/);
     } finally {
         globalThis.fetch = originalFetch;
     }

@@ -107,9 +107,10 @@ narrower) call, the receipt cannot claim that every requested source was
 fully searched. In that case `sources.searched` stays empty and the affected
 sources move into `sources.unknownCoverage` instead — regardless of whether
 the receipt's status is `found`, `absent`, or `conflicting`. The model-facing
-notice names this as unverified coverage and includes the bounded warning
-text, so a partial failure is never silently hidden behind a positive result
-count.
+notice names this as unverified coverage and reports the warning count. The
+notice itself omits warning text; sanitized warning
+details remain available in the explicit tool response, capped at 256
+characters per entry. Warning details are never copied into logs.
 
 ### Zero included content
 
@@ -122,10 +123,11 @@ model explicitly that no usable memory context was attached this turn.
 
 The receipt carries a turn ID (the harness's `currentUserMessageId` or
 `runId` when available, otherwise a generated UUID), status, bounded source
-lists (including `unknownCoverage`), bounded/truncated warnings and conflicts
-(never raw query or result text), `includedCount`, a truncation flag, and
-start/end timestamps. It is built in memory for the current hook invocation
-only and is never persisted to a database.
+lists (including `unknownCoverage`), up to five sanitized warnings and
+conflicts capped at 256 characters each, and a turn ID capped at 128
+characters. It contains no raw query or result text, plus `includedCount`, a
+truncation flag, and start/end timestamps. It is built in memory for the
+current hook invocation only and is never persisted to a database.
 
 ### Execution trace
 

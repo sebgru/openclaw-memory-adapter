@@ -67,7 +67,7 @@ export default definePluginEntry({
       try {
         const { results, warnings, conflicts } = await searchUnified(event.prompt, { ...config, scope, profile: "prompt" });
         if (warnings?.length) {
-          api.logger.warn?.(`memory-adapter: ${warnings.slice(0, 3).join("; ")}`);
+          api.logger.warn?.(`memory-adapter: service reported ${warnings.length} warning(s); details omitted`);
         }
         const maxContextLength = Number.isInteger(config.maxContextLength) ? config.maxContextLength : undefined;
         if (!turnReceipts) {

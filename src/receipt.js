@@ -2,6 +2,16 @@ const RECEIPT_SCHEMA_VERSION = 2;
 const KNOWN_SOURCES = ["main", "archive", "documents"];
 const MAX_WARNINGS = 5;
 const MAX_CONFLICTS = 5;
+const MAX_MESSAGE_LENGTH = 256;
+const MAX_TURN_ID_LENGTH = 128;
+
+function boundedMessages(messages, maxEntries) {
+  return Array.isArray(messages)
+    ? messages.slice(0, maxEntries).map((message) => String(message)
+      // eslint-disable-next-line no-control-regex
+      .replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").replace(/\s+/g, " ").trim().slice(0, MAX_MESSAGE_LENGTH))
+    : [];
+}
 
 function sourcesForScope(scope) {
   if (!scope || scope === "all") return [...KNOWN_SOURCES];
@@ -35,8 +45,8 @@ function buildReceipt({
 }) {
   const requestedSources = sourcesForScope(scope);
   const notSearched = KNOWN_SOURCES.filter((source) => !requestedSources.includes(source));
-  const boundedWarnings = Array.isArray(warnings) ? warnings.slice(0, MAX_WARNINGS).map(String) : [];
-  const boundedConflicts = Array.isArray(conflicts) ? conflicts.slice(0, MAX_CONFLICTS).map(String) : [];
+  const boundedWarnings = boundedMessages(warnings, MAX_WARNINGS);
+  const boundedConflicts = boundedMessages(conflicts, MAX_CONFLICTS);
   const partialCoverage = !error && boundedWarnings.length > 0;
 
   let status;
@@ -74,7 +84,7 @@ function buildReceipt({
 
   return {
     schemaVersion: RECEIPT_SCHEMA_VERSION,
-    turnId: String(turnId ?? ""),
+    turnId: String(turnId ?? "").slice(0, MAX_TURN_ID_LENGTH),
     status,
     resultCount: boundedResultCount,
     includedCount: boundedIncludedCount,
@@ -125,7 +135,7 @@ function formatReceiptNotice(receipt) {
       "Source coverage for this turn is unverified: the memory service reported warnings and did not confirm which requested sources were fully searched, so treat coverage as partial, not complete.",
     );
     if (receipt.warnings.length > 0) {
-      parts.push(`Service warnings: ${receipt.warnings.join("; ")}.`);
+      parts.push(`The service reported ${receipt.warnings.length} warning${receipt.warnings.length === 1 ? "" : "s"}; warning details are omitted from this notice.`);
     }
   }
 
