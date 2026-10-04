@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { RECEIPT_SCHEMA_VERSION, buildReceipt, formatReceiptNotice, sourcesForScope } from "../src/receipt.js";
+import { RECEIPT_SCHEMA_VERSION, buildReceipt, formatReceiptNotice, receiptTraceSummary, sourcesForScope } from "../src/receipt.js";
 
 test("sourcesForScope expands all/undefined/unknown scopes to every known source", () => {
     assert.deepEqual(sourcesForScope("all"), ["main", "archive", "documents"]);
@@ -27,7 +27,7 @@ test("buildReceipt classifies a successful search with results as found", () => 
     assert.equal(receipt.schemaVersion, RECEIPT_SCHEMA_VERSION);
     assert.equal(receipt.status, "found");
     assert.equal(receipt.resultCount, 3);
-    assert.deepEqual(receipt.sources, { searched: ["main", "archive", "documents"], absent: [], unavailable: [], notSearched: [] });
+    assert.deepEqual(receipt.sources, { searched: ["main", "archive", "documents"], absent: [], unavailable: [], notSearched: [], unknownCoverage: [] });
     assert.equal(receipt.timing.durationMs, 40);
 });
 
@@ -110,4 +110,142 @@ test("formatReceiptNotice appends not-searched sources when scope was narrowed",
     const receipt = buildReceipt({ turnId: "t13", scope: "documents", startedAt: 0, endedAt: 1, resultCount: 0 });
     const notice = formatReceiptNotice(receipt);
     assert.match(notice, /Not searched this turn: main, archive\./);
+});
+
+// ── partial source coverage (service warnings without per-source detail) ────
+
+test("buildReceipt treats scope=all with warnings as partial/unknown coverage, not fully searched", () => {
+    const receipt = buildReceipt({
+        turnId: "t14",
+        scope: "all",
+        startedAt: 0,
+        endedAt: 1,
+        resultCount: 3,
+        warnings: ["archive index unavailable"],
+    });
+    assert.equal(receipt.status, "found");
+    assert.equal(receipt.partialCoverage, true);
+    assert.deepEqual(receipt.sources.searched, []);
+    assert.deepEqual(receipt.sources.unknownCoverage, ["main", "archive", "documents"]);
+});
+
+test("buildReceipt does not claim absence for a narrowed/all scope when warnings leave coverage unverified", () => {
+    const receipt = buildReceipt({
+        turnId: "t15",
+        scope: "all",
+        startedAt: 0,
+        endedAt: 1,
+        resultCount: 0,
+        warnings: ["partial index"],
+    });
+    assert.equal(receipt.status, "absent");
+    assert.deepEqual(receipt.sources.absent, []);
+    assert.deepEqual(receipt.sources.searched, []);
+    assert.deepEqual(receipt.sources.unknownCoverage, ["main", "archive", "documents"]);
+});
+
+test("buildReceipt treats conflicting + warnings as unknown coverage too", () => {
+    const receipt = buildReceipt({
+        turnId: "t16",
+        scope: "all",
+        startedAt: 0,
+        endedAt: 1,
+        resultCount: 2,
+        conflicts: ["a vs b"],
+        warnings: ["documents index degraded"],
+    });
+    assert.equal(receipt.status, "conflicting");
+    assert.equal(receipt.partialCoverage, true);
+    assert.deepEqual(receipt.sources.searched, []);
+    assert.deepEqual(receipt.sources.unknownCoverage, ["main", "archive", "documents"]);
+});
+
+test("formatReceiptNotice surfaces partial coverage and the underlying warnings even when results were found", () => {
+    const receipt = buildReceipt({
+        turnId: "t17",
+        scope: "all",
+        startedAt: 0,
+        endedAt: 1,
+        resultCount: 2,
+        includedCount: 2,
+        warnings: ["archive index unavailable"],
+    });
+    const notice = formatReceiptNotice(receipt);
+    assert.match(notice, /coverage for this turn is unverified/);
+    assert.match(notice, /archive index unavailable/);
+});
+
+test("buildReceipt without warnings keeps full-coverage behavior unchanged", () => {
+    const receipt = buildReceipt({ turnId: "t18", scope: "all", startedAt: 0, endedAt: 1, resultCount: 1 });
+    assert.equal(receipt.partialCoverage, false);
+    assert.deepEqual(receipt.sources.unknownCoverage, []);
+    assert.deepEqual(receipt.sources.searched, ["main", "archive", "documents"]);
+});
+
+// ── zero included content despite matching results ──────────────────────────
+
+test("buildReceipt flags found-with-zero-included-content as not actually usable", () => {
+    const receipt = buildReceipt({
+        turnId: "t19",
+        scope: "all",
+        startedAt: 0,
+        endedAt: 1,
+        resultCount: 3,
+        includedCount: 0,
+    });
+    assert.equal(receipt.status, "found");
+    assert.equal(receipt.resultCount, 3);
+    assert.equal(receipt.includedCount, 0);
+    assert.equal(receipt.noContentIncluded, true);
+});
+
+test("formatReceiptNotice warns the model when matches were found but nothing was included", () => {
+    const receipt = buildReceipt({
+        turnId: "t20",
+        scope: "all",
+        startedAt: 0,
+        endedAt: 1,
+        resultCount: 2,
+        includedCount: 0,
+    });
+    const notice = formatReceiptNotice(receipt);
+    assert.match(notice, /none of the retrieved content could be attached/);
+});
+
+test("buildReceipt does not flag noContentIncluded when results actually include content", () => {
+    const receipt = buildReceipt({ turnId: "t21", scope: "all", startedAt: 0, endedAt: 1, resultCount: 2, includedCount: 2 });
+    assert.equal(receipt.noContentIncluded, false);
+    assert.equal(formatReceiptNotice(receipt), "");
+});
+
+// ── execution trace for runtime acceptance/diagnostics ──────────────────────
+
+test("receiptTraceSummary exposes turnId, schemaVersion, status, timing, and bounded sources without warnings/conflicts text", () => {
+    const receipt = buildReceipt({
+        turnId: "t22",
+        scope: "all",
+        startedAt: 10,
+        endedAt: 25,
+        resultCount: 1,
+        includedCount: 1,
+        warnings: ["should not leak verbatim into the trace key set"],
+    });
+    const summary = receiptTraceSummary(receipt);
+    assert.deepEqual(Object.keys(summary).sort(), [
+        "includedCount",
+        "partialCoverage",
+        "resultCount",
+        "schemaVersion",
+        "sources",
+        "status",
+        "timing",
+        "truncated",
+        "turnId",
+    ]);
+    assert.equal(summary.turnId, "t22");
+    assert.equal(summary.schemaVersion, RECEIPT_SCHEMA_VERSION);
+    assert.equal(summary.status, "found");
+    assert.deepEqual(summary.timing, { startedAt: 10, endedAt: 25, durationMs: 15 });
+    assert.equal(summary.warnings, undefined);
+    assert.equal(summary.conflicts, undefined);
 });

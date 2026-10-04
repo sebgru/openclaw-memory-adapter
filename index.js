@@ -1,6 +1,6 @@
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import { buildMemoryContextDetails, formatMemoryContext, searchUnified } from "./src/client.js";
-import { buildReceipt, formatReceiptNotice } from "./src/receipt.js";
+import { buildReceipt, formatReceiptNotice, receiptTraceSummary } from "./src/receipt.js";
 
 const FAILURE_NOTICE = "Memory retrieval unavailable; do not assert facts from memory without verifying through another source.";
 
@@ -25,6 +25,20 @@ const UnifiedMemorySearchParameters = {
 
 function listAllows(list, value) {
   return !Array.isArray(list) || list.length === 0 || (value && list.includes(value));
+}
+
+/**
+ * Emits a bounded, non-sensitive JSON trace line for the receipt (turnId,
+ * schema version, status, timing, bounded source identifiers - no raw query
+ * or result text). This is the only observable execution trace: the plugin
+ * API's before_prompt_build hook has no documented field for returning
+ * structured metadata (only prependContext/appendContext/systemPrompt/
+ * prependSystemContext/appendSystemContext/toolsAllow), so the scoped
+ * plugin logger is the supported surface for making the trace available to
+ * runtime acceptance/diagnostics without a parallel receipt database.
+ */
+function logReceiptTrace(api, receipt) {
+  api.logger?.debug?.(`memory-adapter: receipt ${JSON.stringify(receiptTraceSummary(receipt))}`);
 }
 
 export { eligible, listAllows };
@@ -60,23 +74,22 @@ export default definePluginEntry({
           const context = formatMemoryContext(results, maxContextLength);
           return context ? { prependContext: context } : undefined;
         }
-        const { text: context, truncated } = buildMemoryContextDetails(results, maxContextLength);
+        const { text: context, truncated, includedCount } = buildMemoryContextDetails(results, maxContextLength);
         const receipt = buildReceipt({
           turnId,
           scope,
           startedAt,
           endedAt: Date.now(),
           resultCount: results.length,
+          includedCount,
           warnings,
           conflicts,
           truncated,
         });
-        if (receipt.status === "found") {
-          // resultCount > 0 for "found" guarantees buildMemoryContextDetails produced a non-empty header.
-          return { prependContext: context };
-        }
+        logReceiptTrace(api, receipt);
         const notice = formatReceiptNotice(receipt);
-        const prependContext = context ? `${context}\n\n${notice}` : notice;
+        const hasUsableContext = includedCount > 0;
+        const prependContext = [hasUsableContext ? context : "", notice].filter(Boolean).join("\n\n");
         return { prependContext };
       } catch (error) {
         api.logger.warn?.(`memory-adapter: retrieval failed: ${String(error)}`);
@@ -84,6 +97,7 @@ export default definePluginEntry({
           return { prependContext: FAILURE_NOTICE };
         }
         const receipt = buildReceipt({ turnId, scope, startedAt, endedAt: Date.now(), error: true });
+        logReceiptTrace(api, receipt);
         return { prependContext: formatReceiptNotice(receipt) };
       }
     }, { timeoutMs: (config.timeoutMs ?? 1500) + 250 });

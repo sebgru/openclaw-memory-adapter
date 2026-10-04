@@ -328,10 +328,14 @@ test("formatMemoryContext truncates at maxLength", () => {
 
 function makeApi(config) {
     const handlers = {};
+    handlers.debugLogs = [];
     return {
         handlers,
         pluginConfig: config,
-        logger: { warn: (msg) => { handlers.lastWarn = msg; } },
+        logger: {
+            warn: (msg) => { handlers.lastWarn = msg; },
+            debug: (msg) => { handlers.debugLogs.push(msg); handlers.lastDebug = msg; },
+        },
         on: (name, fn) => { handlers[name] = fn; },
         registerTool: (factory, options) => { handlers.tool = typeof factory === "function" ? factory({ agentId: "a" }) : factory; handlers.toolOptions = options; },
     };
@@ -741,6 +745,103 @@ test("provenance and alternate_provenance pass through to normalized results", a
     assert.equal(results[0].relevanceScore, 0.92);
     assert.equal(results[0].provenance, "memory/2026-09-01.md");
     assert.equal(results[0].alternateProvenance, "sessions/2026/09/abc.md");
+});
+
+// ── §5A follow-up: honest partial coverage, zero-included-content, trace ────
+
+test("turnReceipts on: scope=all with warnings surfaces partial coverage alongside found results instead of hiding them", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => ({
+        ok: true,
+        async json() {
+            return { results: [{ text: "fact", source: "MEMORY.md" }], warnings: ["archive index unavailable"] };
+        },
+    });
+    try {
+        const api = makeApi({ ...ENDPOINT, turnReceipts: true });
+        plugin.register(api);
+        const result = await api.handlers.before_prompt_build({ prompt: "hello" }, CTX);
+        assert.match(result.prependContext, /fact/);
+        assert.match(result.prependContext, /coverage for this turn is unverified/);
+        assert.match(result.prependContext, /archive index unavailable/);
+    } finally {
+        globalThis.fetch = originalFetch;
+    }
+});
+
+test("turnReceipts on: zero-length context budget drops header-only output and tells the model nothing usable was attached", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => ({
+        ok: true,
+        async json() {
+            return { results: [{ text: "this single result is far too long to fit inside a tiny context budget" }] };
+        },
+    });
+    try {
+        const handlers = setup({ ...ENDPOINT, turnReceipts: true, maxContextLength: 10 });
+        const result = await handlers.before_prompt_build({ prompt: "hello" }, CTX);
+        assert.ok(result?.prependContext);
+        assert.doesNotMatch(result.prependContext, /Relevant external memory/);
+        assert.match(result.prependContext, /none of the retrieved content could be attached/);
+    } finally {
+        globalThis.fetch = originalFetch;
+    }
+});
+
+test("turnReceipts on: emits a bounded JSON receipt trace via the plugin logger with no raw query/result text", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => ({
+        ok: true,
+        async json() {
+            return { results: [{ text: "super secret memory content" }] };
+        },
+    });
+    try {
+        const api = makeApi({ ...ENDPOINT, turnReceipts: true });
+        plugin.register(api);
+        await api.handlers.before_prompt_build({ prompt: "what did we decide", currentUserMessageId: "msg-7" }, CTX);
+        assert.equal(api.handlers.debugLogs.length, 1);
+        const [line] = api.handlers.debugLogs;
+        assert.match(line, /^memory-adapter: receipt /);
+        const payload = JSON.parse(line.slice("memory-adapter: receipt ".length));
+        assert.equal(payload.turnId, "msg-7");
+        assert.equal(payload.status, "found");
+        assert.ok(Number.isInteger(payload.schemaVersion));
+        assert.ok(payload.timing);
+        assert.deepEqual(Object.keys(payload.sources).sort(), ["absent", "notSearched", "searched", "unavailable", "unknownCoverage"]);
+        assert.doesNotMatch(line, /super secret memory content/);
+        assert.doesNotMatch(line, /what did we decide/);
+    } finally {
+        globalThis.fetch = originalFetch;
+    }
+});
+
+test("turnReceipts on: receipt trace is also emitted on hard failure", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => { throw new Error("connection refused"); };
+    try {
+        const api = makeApi({ ...ENDPOINT, turnReceipts: true });
+        plugin.register(api);
+        await api.handlers.before_prompt_build({ prompt: "hello" }, CTX);
+        assert.equal(api.handlers.debugLogs.length, 1);
+        const payload = JSON.parse(api.handlers.debugLogs[0].slice("memory-adapter: receipt ".length));
+        assert.equal(payload.status, "unavailable");
+    } finally {
+        globalThis.fetch = originalFetch;
+    }
+});
+
+test("turnReceipts off: no receipt trace is logged (legacy behavior untouched)", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => ({ ok: true, async json() { return { results: [{ text: "fact" }] }; } });
+    try {
+        const api = makeApi(ENDPOINT);
+        plugin.register(api);
+        await api.handlers.before_prompt_build({ prompt: "hello" }, CTX);
+        assert.deepEqual(api.handlers.debugLogs, []);
+    } finally {
+        globalThis.fetch = originalFetch;
+    }
 });
 
 test("searchUnified bounds query length via config", async () => {
