@@ -69,6 +69,133 @@ The plugin is configured through OpenClaw's normal plugin configuration:
 The endpoint is runtime configuration; no deployment-specific hostname is
 required by this repository.
 
+## Memory layers and Dreaming curation
+
+This section describes how the adapter fits into the reference deployment it
+was built for. It is operational context, not plugin behavior: the plugin
+itself only retrieves. Workspace paths are relative to the OpenClaw agent
+workspace. Times are Europe/Berlin.
+
+### Retrieval path
+
+- OpenClaw's bundled `memory-core` plugin and its native Dreaming feature are
+  **disabled**. The old native `active-memory` path is retired.
+- The external memory service (`memory-sebg`) is the only retrieval and
+  indexing path. It combines SQLite/FTS5 lexical search with Qdrant semantic
+  search (`bge-m3` embeddings) and hybrid-ranks the results.
+- This adapter queries that service before each eligible reply and exposes
+  `unified_memory_search` for explicit follow-up searches. It fails closed:
+  on timeout or malformed data it injects nothing.
+
+Retrieval is automatic. Promotion and archiving are separate, controlled
+processes (see below).
+
+### The three memory layers
+
+| Layer | Who writes or maintains it | How it is used or searched |
+|---|---|---|
+| **Active conversation** ("session memory") | OpenClaw records the live conversation in its session store. | Used directly by the active agent session as its current transcript/context. Not part of `memory-core` or the external service. |
+| **Persistent session archive** | The `session-archive-sync` automation runs every 30 minutes. `session-archive-export.py` exports eligible aged/completed sessions as Markdown and `session-archive-sync.sh` refreshes the external archive index. Active sessions, the main session, and subagent sessions are not exported. | Indexed by the external service; retrievable later with `unified_memory_search`. Archived material is historical evidence, not trusted current instructions. |
+| **Curated notes and durable memory** | The agent writes ongoing facts into daily notes, and durable facts into the appropriate canonical file, when warranted. | Indexed by the external service; future sessions retrieve them through `unified_memory_search`. |
+
+The external service indexes and retrieves all of these files. It does not
+decide what gets promoted into `MEMORY.md`.
+
+"Short-term promotion" refers only to the retired `memory-core` feature, which
+tracked native recall activity and promoted selected items into `MEMORY.md`.
+It does not maintain the live transcript or export old sessions. With
+`memory-core` disabled, that mechanism is off. Do not add a second native
+index or a parallel short-term/session database.
+
+#### Canonical destinations for durable facts
+
+- `USER.md`: personal facts and stable preferences
+- `SOUL.md`: hard behavioral rules
+- `AGENTS.md`: workflow rules
+- `TOOLS.md`: environment and technical configuration
+- `MEMORY.md`: only small, high-value durable context. It is kept small on
+  purpose and is not a dump for conversation history.
+- `memory/knowledge/<topic>.md`: detailed historical or project knowledge
+- daily note: event-specific information that should not become permanent
+  context
+
+When verbose material is trimmed from a startup file, it is kept in a dated
+archive such as `memory/knowledge/startup-memory-trim-YYYY-MM-DD.md`. It stays
+recoverable and searchable but is no longer loaded at startup.
+
+### Dreaming curation flow
+
+```text
+older session/dreaming material
+  → curator (05:30)  → digest + canonical JSON queue
+  → quality filter
+  → review jobs (06:00, 06:01) → approval request
+  → owner approves a specific proposal
+  → manual write to the canonical owner file → indexed by the external service
+```
+
+Jobs:
+
+| Time | Job | What it does |
+|---|---|---|
+| 05:20 daily | Personal fact promotion | Refreshes a registry of high-confidence, stable personal facts under `memory/facts/`. Narrow scope; does not ask for approval. |
+| 05:30 daily | Dreaming curation digest | Candidate generation. Writes an advisory Markdown digest under `memory/dreaming/digests/` and the machine-readable queue `memory/review-candidates/YYYY-MM-DD-promotion-candidates.json`. Report-only: promotes nothing. |
+| 06:00 daily | Dreaming candidate review 1/2 | Reads **only** the canonical JSON queue and sends an approval request for candidates that pass the quality checks. An empty queue returns `NO_REPLY` and sends nothing. |
+| 06:01 daily | Dreaming candidate review 2/2 | Same as 1/2, second slot. |
+
+The legacy `Memory Dreaming Promotion` job, which could auto-promote, is
+disabled.
+
+**What the curator looks for:** stable preferences, explicit decisions and
+constraints, lessons from failures, personal facts, active projects, and
+durable infrastructure decisions.
+
+**What it rejects:** food-log noise and ephemeral status, newsletters and
+reports, configuration/status blobs, clipped fragments, items without concrete
+evidence, and internal control markers.
+
+**Approval:** a review message proposes a candidate with its evidence source
+and a suggested destination (for example `USER.md`, `MEMORY.md`, or
+`AGENTS.md`). A candidate is never written to startup memory just because it
+scored highly. Durable memory changes only after the owner approves a specific
+proposal. The fact is then written to the correct canonical file with
+provenance, and the existing indexing path makes it searchable.
+
+**Never automatic:** promotion into `MEMORY.md` or any other canonical memory
+or user-fact file, and any config, cron, or Gateway change. The review queue is
+the only permitted delivery source. These rules exist because the old system
+delivered clipped conversation fragments, stale reports, and configuration
+blobs as if they were durable memories.
+
+#### Agreed direction for candidate generation
+
+Native Dreaming will not be re-enabled to recover candidate generation. In the
+installed OpenClaw version, enabling it also schedules native promotion into
+`MEMORY.md`, and there is no supported report-only mode. Instead, a separate,
+report-only candidate producer backed by the external memory service and
+explicitly approved source files will:
+
+- write only a human-readable digest and review proposals, each with source,
+  location, date/freshness, rationale, and suggested destination;
+- never edit `MEMORY.md`, canonical memory, or user facts;
+- reuse the existing review/digest delivery slots, with no duplicate review
+  jobs;
+- label the digest incomplete/unavailable when an input source is
+  unavailable, instead of presenting an empty list as "nothing worth keeping".
+
+### Known gaps (2026-10-04)
+
+The inputs to the candidate digest are stale since `memory-core` was disabled:
+
+- `scripts/dreaming-curator.mjs` reads `memory/dreaming/{light,deep,rem}/`.
+  Those phase files were written by `memory-core` Dreaming; the newest is from
+  2026-09-08.
+- `scripts/dreaming-report-only.mjs` runs `openclaw memory promote`, which
+  depends on native `memory-core` recall data.
+
+**Until the replacement producer exists, "0 candidates" means "no input", not
+"nothing worth keeping".**
+
 ## External installation and upgrades
 
 Install a tagged release with OpenClaw's plugin installer:
