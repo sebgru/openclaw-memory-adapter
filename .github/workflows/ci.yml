@@ -29,11 +29,12 @@ jobs:
       - name: Syntax check
         run: npm run check
 
-      - name: Test with coverage (>= 99%)
+      - name: Test with coverage (100% enforced)
         run: npm run test:coverage
 
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@v5
         with:
           files: coverage/lcov.info
+          token: ${{ secrets.CODECOV_TOKEN }}
           fail_ci_if_error: true
