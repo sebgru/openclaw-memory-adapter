@@ -1,5 +1,11 @@
 # Codecov configuration — https://docs.codecov.com/docs/codecov-yaml
 #
+# The repository's default branch is `main`. Pin Codecov to it explicitly so
+# its default branch, project baseline, and cached YAML match the repo instead
+# of a stale `master` value.
+codecov:
+  branch: main
+
 # The test suite enforces 100% statement/branch/function/line coverage locally
 # via `c8 --100` (`npm run test:coverage`). The status checks below gate the
 # Codecov project and patch at the same 100% threshold so that CI and Codecov
