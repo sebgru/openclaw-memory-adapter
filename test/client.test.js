@@ -96,6 +96,38 @@ test("normalizeConfig validates scope and profile enums", () => {
     assert.equal(normalizeConfig(ENDPOINT).profile, undefined);
 });
 
+test("deduplication is explicitly opt-in", () => {
+    assert.equal(normalizeConfig(ENDPOINT).deduplicateResults, false);
+    assert.equal(normalizeConfig({ ...ENDPOINT, deduplicateResults: true }).deduplicateResults, true);
+    assert.equal(normalizeConfig({ ...ENDPOINT, deduplicateResults: "true" }).deduplicateResults, false);
+});
+
+test("opt-in deduplication retains the first ranked result for stable IDs and locations", async () => {
+    const payload = { results: [
+        { id: "same", text: "first", source: "main" },
+        { id: "same", text: "second", source: "archive" },
+        { text: "third", source: "documents", path: "file.md", line: 7 },
+        { text: "fourth", source: "documents", path: "file.md", line: 7 },
+        { text: "fifth", source: "documents", path: "file.md", line: 8 },
+    ] };
+    const fetchImpl = async () => ({ ok: true, json: async () => payload });
+    const legacy = await searchUnified("q", { ...ENDPOINT, maxResults: 5 }, fetchImpl);
+    const deduped = await searchUnified("q", { ...ENDPOINT, maxResults: 5, deduplicateResults: true }, fetchImpl);
+    assert.equal(legacy.results.length, 5);
+    assert.deepEqual(deduped.results.map(({ text }) => text), ["first", "third", "fifth"]);
+});
+
+test("deduplication does not conflate unlocated chunks or different source paths", () => {
+    const payload = { results: [
+        { text: "A", source: "documents" },
+        { text: "B", source: "documents" },
+        { text: "C", source: "documents", path: "one.md", line: 1 },
+        { text: "D", source: "archive", path: "one.md", line: 1 },
+        { text: "E", source: "documents", path: "two.md", line: 1 },
+    ] };
+    assert.deepEqual(normalizeResults(payload, 5, 2000, true).results.map(({ text }) => text), ["A", "B", "C", "D", "E"]);
+});
+
 // ── normalizeResults ─────────────────────────────────────────────────────────
 
 test("normalizeResults handles array payloads, content field and missing score", () => {

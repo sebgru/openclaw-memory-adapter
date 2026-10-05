@@ -43,6 +43,13 @@ surfaced alongside results. The tool response's `details.receipt` carries the
 schema-v2 status/source-coverage receipt for that explicit search; it contains
 no query or result text.
 
+`deduplicateResults` is an optional, default-off provenance deduplication flag
+for both automatic and explicit searches. When enabled, repeated results with
+the same stable ID, or the same source/path/line tuple, collapse to the first
+(highest-ranked) result in the returned page. Unlocated chunks remain distinct
+to avoid merging unrelated text. This does not issue another search or fill
+vacated slots; receipt counts reflect the returned deduplicated results.
+
 ## Configuration
 
 The plugin is configured through OpenClaw's normal plugin configuration:
