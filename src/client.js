@@ -21,10 +21,17 @@ function normalizeConfig(config = {}) {
     maxResultTextLength: Number.isInteger(config.maxResultTextLength) ? config.maxResultTextLength : DEFAULT_MAX_RESULT_TEXT_LENGTH,
     scope: config.scope === null ? null : (VALID_SCOPES.includes(config.scope) ? config.scope : "all"),
     profile: config.profile === null ? null : (VALID_PROFILES.includes(config.profile) ? config.profile : undefined),
+    deduplicateResults: config.deduplicateResults === true,
   };
 }
 
-function normalizeResults(payload, maxResults, maxResultTextLength = DEFAULT_MAX_RESULT_TEXT_LENGTH) {
+function resultIdentity(item) {
+  if (item.id) return `id:${item.id}`;
+  if (item.path && Number.isInteger(item.line)) return `location:${JSON.stringify([item.source, item.path, item.line])}`;
+  return undefined;
+}
+
+function normalizeResults(payload, maxResults, maxResultTextLength = DEFAULT_MAX_RESULT_TEXT_LENGTH, deduplicateResults = false) {
   const raw = Array.isArray(payload) ? payload : payload?.results;
   const boundMessages = (messages) => Array.isArray(messages)
     ? messages.slice(0, 5).map((message) => String(message)
@@ -62,7 +69,16 @@ function normalizeResults(payload, maxResults, maxResultTextLength = DEFAULT_MAX
     };
     return [entry];
   });
-  return { results, warnings, conflicts };
+  if (!deduplicateResults) return { results, warnings, conflicts };
+  const seen = new Set();
+  const uniqueResults = results.filter((item) => {
+    const identity = resultIdentity(item);
+    if (!identity) return true;
+    if (seen.has(identity)) return false;
+    seen.add(identity);
+    return true;
+  });
+  return { results: uniqueResults, warnings, conflicts };
 }
 
 export async function searchMemory(query, config, fetchImpl = globalThis.fetch) {
@@ -91,7 +107,7 @@ async function searchService(query, config, fetchImpl, path) {
       signal: controller.signal,
     });
     if (!response.ok) throw new Error(`memory service returned HTTP ${response.status}`);
-    return normalizeResults(await response.json(), normalized.maxResults, normalized.maxResultTextLength);
+    return normalizeResults(await response.json(), normalized.maxResults, normalized.maxResultTextLength, normalized.deduplicateResults);
   } finally {
     clearTimeout(timer);
   }

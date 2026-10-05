@@ -1,7 +1,7 @@
 # OpenClaw Memory Adapter
 
 [![CI](https://github.com/sebgru/openclaw-memory-adapter/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/sebgru/openclaw-memory-adapter/actions/workflows/ci.yml)
-[![codecov](https://codecov.io/gh/sebgru/openclaw-memory-adapter/branch/main/graph/badge.svg?token=jwMr8sJGGb)](https://codecov.io/gh/sebgru/openclaw-memory-adapter)
+[![codecov](https://codecov.io/gh/sebgru/openclaw-memory-adapter/branch/main/graph/badge.svg)](https://codecov.io/gh/sebgru/openclaw-memory-adapter)
 [![License: MIT](https://img.shields.io/github/license/sebgru/openclaw-memory-adapter.svg?branch=main)](LICENSE)
 
 An external OpenClaw plugin that retrieves bounded memory context from an HTTP
@@ -39,7 +39,16 @@ Results include source metadata (path, heading, line), relevance/lexical/
 semantic scores, provenance, and alternate provenance when the service
 provides them. Per-result text is bounded to `maxResultTextLength` and total
 injected context is bounded to `maxContextLength`. Service warnings are
-surfaced alongside results.
+surfaced alongside results. The tool response's `details.receipt` carries the
+schema-v2 status/source-coverage receipt for that explicit search; it contains
+no query or result text.
+
+`deduplicateResults` is an optional, default-off provenance deduplication flag
+for both automatic and explicit searches. When enabled, repeated results with
+the same stable ID, or the same source/path/line tuple, collapse to the first
+(highest-ranked) result in the returned page. Unlocated chunks remain distinct
+to avoid merging unrelated text. This does not issue another search or fill
+vacated slots; receipt counts reflect the returned deduplicated results.
 
 ## Configuration
 
@@ -59,7 +68,8 @@ The plugin is configured through OpenClaw's normal plugin configuration:
           "maxQueryLength": 4000,
           "maxContextLength": 12000,
           "maxResultTextLength": 2000,
-          "turnReceipts": false
+          "turnReceipts": false,
+          "deduplicateResults": false
         }
       }
     }
@@ -143,9 +153,16 @@ the receipt observable to runtime acceptance checks or diagnostics without a
 parallel receipt database; with `turnReceipts` off (the default), no such
 line is logged and behavior is unchanged.
 
-Cross-plugin receipt consumption (the orchestration plugin reading this
-receipt) is still explicitly out of scope for this change and remains an
-open contract question — see the architecture proposal, §5A and open
+This is not an automatic hook-to-hook accessor: `before_prompt_build` still
+does not return structured metadata. However, every explicit
+`unified_memory_search` tool response now includes the ephemeral schema-v2
+receipt at `details.receipt`, alongside the existing `scope`, `results`,
+`warnings`, and `conflicts`. This is the versioned receipt contract for a caller
+that explicitly invokes the tool before dispatch; it contains status, bounded
+source coverage, timing, counts, and truncation flags, but no query or result
+text. The orchestration adapter still needs a supported runtime mechanism for
+invoking the tool and forwarding its receipt to workers; automatic receipt
+access remains out of scope. See the architecture proposal, §5A and open
 decision 2.
 
 The endpoint is runtime configuration; no deployment-specific hostname is
@@ -181,17 +198,15 @@ The plugin uses the documented hook-based compatibility baseline. See
 release should be treated as a staging candidate, not upgraded directly in
 production.
 
-## Development
-
-```sh
-npm test
-npm run check
-```
-
 ## CI
 
-- **CI** (`ci.yml`): ESLint, syntax check, tests with coverage (≥ 99%, currently 100%), and Codecov upload.
+- **CI** (`ci.yml`): ESLint, syntax check, tests with coverage (100% enforced by `c8 --100`), and a Codecov upload.
 - **Release** (`release.yml`): triggered only on version tags (`v*.*.*`); runs lint and tests, verifies the tag matches `package.json`, builds the npm package tarball, and attaches it to a GitHub Release.
+
+The CI job uploads `coverage/lcov.info` to Codecov using the `CODECOV_TOKEN`
+repository secret, and the build fails if the upload fails. Coverage gating is
+declared in `codecov.yml`: both the project and patch statuses target 100%,
+matching the local `c8 --100` threshold, so CI and Codecov agree.
 
 To publish a release:
 
@@ -211,6 +226,7 @@ openclaw plugins install https://github.com/sebgru/openclaw-memory-adapter/relea
 ```sh
 npm install
 npm run lint
+npm run check
 npm test
 npm run test:coverage
 ```

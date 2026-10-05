@@ -108,25 +108,40 @@ export default definePluginEntry({
       parameters: UnifiedMemorySearchParameters,
       execute: async (_toolCallId, params) => {
         const scope = params.scope ?? config.scope ?? "all";
+        const turnId = (typeof _toolCallId === "string" && _toolCallId.slice(0, 128)) || globalThis.crypto.randomUUID();
+        const startedAt = Date.now();
         try {
           const { results, warnings, conflicts } = await searchUnified(params.query, { ...config, scope, profile: "tool", maxResults: params.maxResults ?? config.maxResults });
+          const { text: context, truncated, includedCount } = buildMemoryContextDetails(results);
+          const receipt = buildReceipt({
+            turnId,
+            scope,
+            startedAt,
+            endedAt: Date.now(),
+            resultCount: results.length,
+            includedCount,
+            warnings,
+            conflicts,
+            truncated,
+          });
           const textParts = [];
           if (results.length === 0) {
             textParts.push("No memory results.");
           } else {
-            textParts.push(formatMemoryContext(results));
+            textParts.push(context);
           }
           if (warnings?.length) {
             textParts.push(`Warnings: ${warnings.slice(0, 3).join("; ")}`);
           }
           return {
             content: [{ type: "text", text: textParts.join("\n") }],
-            details: { scope, results, warnings, conflicts },
+            details: { scope, results, warnings, conflicts, receipt },
           };
         } catch (error) {
+          const receipt = buildReceipt({ turnId, scope, startedAt, endedAt: Date.now(), error: true });
           return {
             content: [{ type: "text", text: FAILURE_NOTICE }],
-            details: { scope, error: String(error) },
+            details: { scope, error: String(error), receipt },
           };
         }
       },
