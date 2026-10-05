@@ -39,7 +39,9 @@ Results include source metadata (path, heading, line), relevance/lexical/
 semantic scores, provenance, and alternate provenance when the service
 provides them. Per-result text is bounded to `maxResultTextLength` and total
 injected context is bounded to `maxContextLength`. Service warnings are
-surfaced alongside results.
+surfaced alongside results. The tool response's `details.receipt` carries the
+schema-v2 status/source-coverage receipt for that explicit search; it contains
+no query or result text.
 
 ## Configuration
 
@@ -143,9 +145,16 @@ the receipt observable to runtime acceptance checks or diagnostics without a
 parallel receipt database; with `turnReceipts` off (the default), no such
 line is logged and behavior is unchanged.
 
-Cross-plugin receipt consumption (the orchestration plugin reading this
-receipt) is still explicitly out of scope for this change and remains an
-open contract question — see the architecture proposal, §5A and open
+This is not an automatic hook-to-hook accessor: `before_prompt_build` still
+does not return structured metadata. However, every explicit
+`unified_memory_search` tool response now includes the ephemeral schema-v2
+receipt at `details.receipt`, alongside the existing `scope`, `results`,
+`warnings`, and `conflicts`. This is the versioned receipt contract for a caller
+that explicitly invokes the tool before dispatch; it contains status, bounded
+source coverage, timing, counts, and truncation flags, but no query or result
+text. The orchestration adapter still needs a supported runtime mechanism for
+invoking the tool and forwarding its receipt to workers; automatic receipt
+access remains out of scope. See the architecture proposal, §5A and open
 decision 2.
 
 The endpoint is runtime configuration; no deployment-specific hostname is
