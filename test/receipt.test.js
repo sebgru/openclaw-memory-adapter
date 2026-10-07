@@ -263,3 +263,70 @@ test("receiptTraceSummary exposes turnId, schemaVersion, status, timing, and bou
     assert.equal(summary.warnings, undefined);
     assert.equal(summary.conflicts, undefined);
 });
+
+// ── per-source service coverage / strict mode ───────────────────────────────
+
+const base = { turnId: "c", scope: "all", startedAt: 0, endedAt: 1 };
+
+test("zero results with service-confirmed coverage of every source is a verified absence", () => {
+    const receipt = buildReceipt({ ...base, resultCount: 0, coverage: { main: "searched", archive: "searched", documents: "searched" } });
+    assert.equal(receipt.status, "absent");
+    assert.deepEqual(receipt.sources.absent, ["main", "archive", "documents"]);
+    assert.equal(receipt.partialCoverage, false);
+});
+
+test("zero results with one unavailable source is unavailable, absence limited to searched sources", () => {
+    const receipt = buildReceipt({ ...base, resultCount: 0, coverage: { main: "searched", archive: "unavailable", documents: "searched" } });
+    assert.equal(receipt.status, "unavailable");
+    assert.deepEqual(receipt.sources.absent, ["main", "documents"]);
+    assert.deepEqual(receipt.sources.unavailable, ["archive"]);
+    assert.equal(receipt.partialCoverage, true);
+    assert.match(formatReceiptNotice(receipt), /Sources unavailable this turn: archive\./);
+});
+
+test("coverage that omits a requested source leaves it unknown, never absent", () => {
+    const receipt = buildReceipt({ ...base, resultCount: 0, coverage: { main: "searched" } });
+    assert.equal(receipt.status, "absent");
+    assert.deepEqual(receipt.sources.absent, ["main"]);
+    assert.deepEqual(receipt.sources.unknownCoverage, ["archive", "documents"]);
+    assert.equal(receipt.partialCoverage, true);
+    assert.match(formatReceiptNotice(receipt), /service did not confirm/);
+});
+
+test("service-reported not_searched moves a source to notSearched", () => {
+    const receipt = buildReceipt({ ...base, resultCount: 1, coverage: { main: "searched", archive: "searched", documents: "not_searched" } });
+    assert.deepEqual(receipt.sources.notSearched, ["documents"]);
+    assert.equal(receipt.partialCoverage, true);
+});
+
+test("explicit coverage is authoritative over warnings for sources it confirms", () => {
+    const receipt = buildReceipt({ ...base, resultCount: 0, warnings: ["noise"], coverage: { main: "searched", archive: "searched", documents: "searched" } });
+    assert.deepEqual(receipt.sources.absent, ["main", "archive", "documents"]);
+});
+
+test("requireCoverage without service coverage never reports absence", () => {
+    const receipt = buildReceipt({ ...base, resultCount: 0, requireCoverage: true });
+    assert.equal(receipt.status, "absent");
+    assert.deepEqual(receipt.sources.absent, []);
+    assert.deepEqual(receipt.sources.searched, []);
+    assert.deepEqual(receipt.sources.unknownCoverage, ["main", "archive", "documents"]);
+    assert.equal(receipt.partialCoverage, true);
+});
+
+test("requireCoverage still honors explicit service coverage", () => {
+    const receipt = buildReceipt({ ...base, resultCount: 0, requireCoverage: true, coverage: { main: "searched", archive: "searched", documents: "searched" } });
+    assert.deepEqual(receipt.sources.absent, ["main", "archive", "documents"]);
+});
+
+test("error keeps every requested source unavailable even if coverage claims searched", () => {
+    const receipt = buildReceipt({ ...base, error: true, coverage: { main: "searched", archive: "searched", documents: "searched" } });
+    assert.equal(receipt.status, "unavailable");
+    assert.deepEqual(receipt.sources.unavailable, ["main", "archive", "documents"]);
+    assert.deepEqual(receipt.sources.absent, []);
+});
+
+test("invalid coverage state values are treated as unknown", () => {
+    const receipt = buildReceipt({ ...base, resultCount: 0, coverage: { main: "yes", archive: "searched", documents: "searched" } });
+    assert.deepEqual(receipt.sources.unknownCoverage, ["main"]);
+    assert.deepEqual(receipt.sources.absent, ["archive", "documents"]);
+});

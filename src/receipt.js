@@ -42,38 +42,56 @@ function buildReceipt({
   conflicts = [],
   truncated = false,
   error = false,
+  coverage,
+  requireCoverage = false,
 }) {
   const requestedSources = sourcesForScope(scope);
-  const notSearched = KNOWN_SOURCES.filter((source) => !requestedSources.includes(source));
   const boundedWarnings = boundedMessages(warnings, MAX_WARNINGS);
   const boundedConflicts = boundedMessages(conflicts, MAX_CONFLICTS);
-  const partialCoverage = !error && boundedWarnings.length > 0;
+  const serviceCoverage = coverage && typeof coverage === "object" ? coverage : undefined;
+
+  // Per-source state. A source counts as searched only on positive evidence:
+  // an explicit service "searched", or - for services that report no coverage
+  // - a clean response (no warnings) unless requireCoverage is set.
+  const stateOf = (source) => {
+    if (serviceCoverage) {
+      const reported = serviceCoverage[source];
+      return ["searched", "unavailable", "not_searched"].includes(reported) ? reported : "unknown";
+    }
+    return boundedWarnings.length > 0 || requireCoverage ? "unknown" : "searched";
+  };
+  const searched = [];
+  const unavailable = [];
+  const unknownCoverage = [];
+  const notSearched = KNOWN_SOURCES.filter((source) => !requestedSources.includes(source));
+  if (error) {
+    unavailable.push(...requestedSources);
+  } else {
+    for (const source of requestedSources) {
+      const state = stateOf(source);
+      if (state === "searched") searched.push(source);
+      else if (state === "unavailable") unavailable.push(source);
+      else if (state === "not_searched") notSearched.push(source);
+      else unknownCoverage.push(source);
+    }
+  }
+  const partialCoverage = !error && searched.length !== requestedSources.length;
 
   let status;
-  let searched = [];
   let absent = [];
-  let unavailable = [];
-  let unknownCoverage = [];
-
   if (error) {
     status = "unavailable";
-    unavailable = requestedSources;
   } else if (boundedConflicts.length > 0) {
     status = "conflicting";
-    if (partialCoverage) unknownCoverage = requestedSources;
-    else searched = requestedSources;
   } else if (resultCount > 0) {
     status = "found";
-    if (partialCoverage) unknownCoverage = requestedSources;
-    else searched = requestedSources;
+  } else if (unavailable.length > 0) {
+    // Zero results with a failed source is never a verified absence.
+    status = "unavailable";
+    absent = searched;
   } else {
     status = "absent";
-    if (partialCoverage) {
-      unknownCoverage = requestedSources;
-    } else {
-      searched = requestedSources;
-      absent = requestedSources;
-    }
+    absent = searched;
   }
 
   const boundedResultCount = error ? 0 : resultCount;
@@ -132,8 +150,13 @@ function formatReceiptNotice(receipt) {
 
   if (receipt.partialCoverage) {
     parts.push(
-      "Source coverage for this turn is unverified: the memory service reported warnings and did not confirm which requested sources were fully searched, so treat coverage as partial, not complete.",
+      receipt.warnings.length > 0
+        ? "Source coverage for this turn is unverified: the memory service reported warnings and did not confirm which requested sources were fully searched, so treat coverage as partial, not complete."
+        : "Source coverage for this turn is unverified: the memory service did not confirm that every requested source was fully searched, so treat coverage as partial, not complete.",
     );
+    if (receipt.sources.unavailable.length > 0) {
+      parts.push(`Sources unavailable this turn: ${receipt.sources.unavailable.join(", ")}.`);
+    }
     if (receipt.warnings.length > 0) {
       parts.push(`The service reported ${receipt.warnings.length} warning${receipt.warnings.length === 1 ? "" : "s"}; warning details are omitted from this notice.`);
     }

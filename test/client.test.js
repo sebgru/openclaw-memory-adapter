@@ -4,6 +4,7 @@ import {
     buildMemoryContextDetails,
     formatMemoryContext,
     normalizeConfig,
+    normalizeCoverage,
     normalizeResults,
     searchMemory,
     searchUnified,
@@ -899,4 +900,27 @@ test("searchUnified bounds query length via config", async () => {
     await searchUnified(longQuery, { ...ENDPOINT, maxQueryLength: 200 }, fetchImpl);
     const url = new URL(request.url);
     assert.equal(url.searchParams.get("q").length, 200);
+});
+
+// ── service-reported coverage ────────────────────────────────────────────────
+
+test("normalizeCoverage keeps only valid sources/states and is undefined otherwise", () => {
+    assert.deepEqual(normalizeCoverage({ main: "searched", archive: "unavailable", documents: "bogus", extra: "searched" }), { main: "searched", archive: "unavailable" });
+    assert.equal(normalizeCoverage({ main: "bogus" }), undefined);
+    assert.equal(normalizeCoverage(null), undefined);
+    assert.equal(normalizeCoverage(["searched"]), undefined);
+    assert.equal(normalizeCoverage("searched"), undefined);
+});
+
+test("normalizeResults passes through coverage only when reported", () => {
+    assert.deepEqual(normalizeResults({ results: [], coverage: { main: "searched" } }, 5).coverage, { main: "searched" });
+    assert.equal("coverage" in normalizeResults({ results: [] }, 5), false);
+    assert.equal("coverage" in normalizeResults([], 5), false);
+    assert.deepEqual(normalizeResults({ coverage: { main: "searched" } }, 5), { results: [], warnings: [], conflicts: [], coverage: { main: "searched" } });
+});
+
+test("normalizeConfig defaults requireServiceCoverage off and accepts only true", () => {
+    assert.equal(normalizeConfig({ endpoint: "http://x" }).requireServiceCoverage, false);
+    assert.equal(normalizeConfig({ endpoint: "http://x", requireServiceCoverage: "yes" }).requireServiceCoverage, false);
+    assert.equal(normalizeConfig({ endpoint: "http://x", requireServiceCoverage: true }).requireServiceCoverage, true);
 });

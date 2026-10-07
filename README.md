@@ -122,6 +122,26 @@ notice itself omits warning text; sanitized warning
 details remain available in the explicit tool response, capped at 256
 characters per entry. Warning details are never copied into logs.
 
+### Service-reported coverage and `requireServiceCoverage`
+
+A source is only classified as searched/absent on positive evidence. If the
+service response includes `coverage: { main|archive|documents:
+"searched"|"unavailable"|"not_searched" }`, that map is authoritative per
+source: `searched` sources can be absent, `unavailable` sources land in
+`sources.unavailable`, `not_searched` in `sources.notSearched`, and any
+requested source the map omits (or gives an invalid value) stays in
+`unknownCoverage`. Zero results with any unavailable source yields status
+`unavailable`, with `sources.absent` limited to the sources that were actually
+searched. A thrown/timed-out call always marks every requested source
+unavailable, regardless of any coverage claim.
+
+Current services do not report `coverage`, so by default a clean response
+(no warnings) is still treated as full coverage, as before. Set
+`requireServiceCoverage: true` (default `false`) to disable that inference:
+without an explicit `coverage` map, no source is reported searched or absent
+and the notice says coverage is unverified. Receipts remain ephemeral; nothing
+is stored.
+
 ### Zero included content
 
 A result can be returned by the service (`resultCount > 0`) yet still produce
