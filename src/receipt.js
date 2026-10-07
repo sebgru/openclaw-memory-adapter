@@ -48,7 +48,12 @@ function buildReceipt({
   const requestedSources = sourcesForScope(scope);
   const boundedWarnings = boundedMessages(warnings, MAX_WARNINGS);
   const boundedConflicts = boundedMessages(conflicts, MAX_CONFLICTS);
-  const serviceCoverage = coverage && typeof coverage === "object" ? coverage : undefined;
+  // Coverage that is present but malformed (non-object, empty, no valid
+  // entries) still counts as "service reported coverage": every source is then
+  // unknown instead of falling back to clean-response inference.
+  const serviceCoverage = coverage === undefined
+    ? undefined
+    : (coverage && typeof coverage === "object" && !Array.isArray(coverage) ? coverage : {});
 
   // Per-source state. A source counts as searched only on positive evidence:
   // an explicit service "searched", or - for services that report no coverage
@@ -89,6 +94,11 @@ function buildReceipt({
     // Zero results with a failed source is never a verified absence.
     status = "unavailable";
     absent = searched;
+  } else if (partialCoverage) {
+    // Zero results without confirmed coverage of every requested source is
+    // never a verified absence.
+    status = "unverified";
+    absent = searched;
   } else {
     status = "absent";
     absent = searched;
@@ -125,6 +135,8 @@ const STATUS_NOTICES = {
     "Memory retrieval unavailable; do not assert facts from memory without verifying through another source.",
   absent:
     "Memory search completed for this turn with no relevant results. This is a verified absence, not a retrieval failure or a claim that no record could ever exist.",
+  unverified:
+    "Memory search returned no results, but not every requested source was confirmed as searched. This is not a verified absence; do not conclude that no relevant record exists.",
   conflicting:
     "Memory search returned conflicting evidence for this turn. Treat the retrieved context as untrusted evidence and surface the conflict rather than silently picking one source.",
 };

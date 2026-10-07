@@ -92,10 +92,13 @@ receipt (`src/receipt.js`, `schemaVersion: 2`) that classifies the single
   is unverified (see below) or nothing retrieved was actually attached to
   the turn, a notice is appended alongside the context instead of being
   suppressed.
-- **absent** — the search completed successfully with zero results. This no
-  longer returns silently: the model receives an explicit notice that
-  retrieval was attempted and found nothing, so it does not have to guess
-  whether memory was searched.
+- **absent** — the search completed successfully with zero results *and*
+  every requested source has confirmed searched coverage. This no longer
+  returns silently: the model receives an explicit verified-absence notice.
+- **unverified** — zero results, but at least one requested source is
+  unknown or not searched (warnings, strict mode without coverage, a partial,
+  empty, or invalid `coverage` map, or a requested `not_searched` source).
+  This is never worded as a verified absence.
 - **unavailable** — the call threw or timed out. This is never reported as
   absence; the model receives the unavailable notice and is told not to
   assert memory-backed facts.
@@ -135,8 +138,11 @@ requested source the map omits (or gives an invalid value) stays in
 searched. A thrown/timed-out call always marks every requested source
 unavailable, regardless of any coverage claim.
 
-Current services do not report `coverage`, so by default a clean response
-(no warnings) is still treated as full coverage, as before. Set
+Present-but-invalid `coverage` (empty map, no valid entries, non-object) still
+counts as reported: every source is unknown and the status is never `absent`.
+Current services do not report `coverage`, so when the field is genuinely
+absent a clean response (no warnings) is still treated as full coverage, as
+before; absent coverage *with* warnings is `unverified`. Set
 `requireServiceCoverage: true` (default `false`) to disable that inference:
 without an explicit `coverage` map, no source is reported searched or absent
 and the notice says coverage is unverified. Receipts remain ephemeral; nothing

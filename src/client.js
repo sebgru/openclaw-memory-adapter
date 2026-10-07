@@ -37,16 +37,20 @@ function resultIdentity(item) {
 /**
  * Optional per-source coverage reported by the service as
  * `coverage: { main|archive|documents: "searched"|"unavailable"|"not_searched" }`.
- * Unknown sources and states are dropped; returns undefined when nothing valid
- * is present so callers can tell "service did not report coverage" apart from
- * "service reported coverage".
+ * Unknown sources and states are dropped. Returns undefined only when the
+ * service omitted `coverage` entirely; a present-but-invalid value yields an
+ * empty map so callers can tell "service did not report coverage" apart from
+ * "service reported coverage we could not use".
  */
 function normalizeCoverage(raw) {
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  if (raw === undefined) return undefined;
+  // Present-but-invalid coverage is preserved as an empty map so receipts
+  // treat every source as unknown rather than inferring coverage.
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
   const entries = COVERAGE_SOURCES
     .filter((source) => COVERAGE_STATES.includes(raw[source]))
     .map((source) => [source, raw[source]]);
-  return entries.length ? Object.fromEntries(entries) : undefined;
+  return Object.fromEntries(entries);
 }
 
 function normalizeResults(payload, maxResults, maxResultTextLength = DEFAULT_MAX_RESULT_TEXT_LENGTH, deduplicateResults = false) {
