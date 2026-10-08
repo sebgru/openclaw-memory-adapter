@@ -24,6 +24,14 @@ indexer and never invokes indexing.
 - The prompt hook uses `scope=all` with `profile=prompt`; the explicit tool
   uses `profile=tool` and supports scopes `all`, `main`, `archive`, and
   `documents`. It never calls `/index`.
+- When a prompt contains one high-confidence explicit entity or identifier
+  (for example, a quoted name, email, filename/path, repository, or
+  multi-token proper name) and the baseline results do not contain it, the
+  hook makes at most one exact-target follow-up search. Filename/path targets
+  use `scope=documents`; other targets use `scope=all`. It does not guess
+  aliases or treat a missing result as proof of absence. The baseline and
+  follow-up share a 6-second retrieval budget; a failed follow-up is disclosed
+  and prevents a verified-absence claim.
 
 ## Unified memory search tool
 
