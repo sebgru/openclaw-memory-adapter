@@ -65,7 +65,7 @@ export default definePluginEntry({
       const turnId = turnReceipts ? nextTurnId(event, ctx) : undefined;
       const startedAt = turnReceipts ? Date.now() : undefined;
       try {
-        const { results, warnings, conflicts } = await searchUnified(event.prompt, { ...config, scope, profile: "prompt" });
+        const { results, warnings, conflicts, coverage } = await searchUnified(event.prompt, { ...config, scope, profile: "prompt" });
         if (warnings?.length) {
           api.logger.warn?.(`memory-adapter: service reported ${warnings.length} warning(s); details omitted`);
         }
@@ -84,6 +84,8 @@ export default definePluginEntry({
           includedCount,
           warnings,
           conflicts,
+          coverage,
+          requireCoverage: config.requireServiceCoverage === true,
           truncated,
         });
         logReceiptTrace(api, receipt);
@@ -111,7 +113,7 @@ export default definePluginEntry({
         const turnId = (typeof _toolCallId === "string" && _toolCallId.slice(0, 128)) || globalThis.crypto.randomUUID();
         const startedAt = Date.now();
         try {
-          const { results, warnings, conflicts } = await searchUnified(params.query, { ...config, scope, profile: "tool", maxResults: params.maxResults ?? config.maxResults });
+          const { results, warnings, conflicts, coverage } = await searchUnified(params.query, { ...config, scope, profile: "tool", maxResults: params.maxResults ?? config.maxResults });
           const { text: context, truncated, includedCount } = buildMemoryContextDetails(results);
           const receipt = buildReceipt({
             turnId,
@@ -122,6 +124,8 @@ export default definePluginEntry({
             includedCount,
             warnings,
             conflicts,
+            coverage,
+            requireCoverage: config.requireServiceCoverage === true,
             truncated,
           });
           const textParts = [];

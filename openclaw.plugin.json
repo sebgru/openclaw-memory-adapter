@@ -19,7 +19,8 @@
       "allowedChatTypes": { "type": "array", "items": { "type": "string" } },
       "allowedChatIds": { "type": "array", "items": { "type": "string" } },
       "turnReceipts": { "type": "boolean", "default": false },
-      "deduplicateResults": { "type": "boolean", "default": false }
+      "deduplicateResults": { "type": "boolean", "default": false },
+      "requireServiceCoverage": { "type": "boolean", "default": false }
     }
   }
 }

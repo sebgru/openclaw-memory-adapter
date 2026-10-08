@@ -6,6 +6,8 @@ const DEFAULT_MAX_RESULT_TEXT_LENGTH = 2000;
 const MAX_SERVICE_MESSAGE_LENGTH = 256;
 const VALID_SCOPES = ["all", "main", "archive", "documents"];
 const VALID_PROFILES = ["prompt", "tool"];
+const COVERAGE_SOURCES = ["main", "archive", "documents"];
+const COVERAGE_STATES = ["searched", "unavailable", "not_searched"];
 
 function normalizeConfig(config = {}) {
   const endpoint = String(config.endpoint ?? "").trim().replace(/\/$/, "");
@@ -22,6 +24,7 @@ function normalizeConfig(config = {}) {
     scope: config.scope === null ? null : (VALID_SCOPES.includes(config.scope) ? config.scope : "all"),
     profile: config.profile === null ? null : (VALID_PROFILES.includes(config.profile) ? config.profile : undefined),
     deduplicateResults: config.deduplicateResults === true,
+    requireServiceCoverage: config.requireServiceCoverage === true,
   };
 }
 
@@ -29,6 +32,25 @@ function resultIdentity(item) {
   if (item.id) return `id:${item.id}`;
   if (item.path && Number.isInteger(item.line)) return `location:${JSON.stringify([item.source, item.path, item.line])}`;
   return undefined;
+}
+
+/**
+ * Optional per-source coverage reported by the service as
+ * `coverage: { main|archive|documents: "searched"|"unavailable"|"not_searched" }`.
+ * Unknown sources and states are dropped. Returns undefined only when the
+ * service omitted `coverage` entirely; a present-but-invalid value yields an
+ * empty map so callers can tell "service did not report coverage" apart from
+ * "service reported coverage we could not use".
+ */
+function normalizeCoverage(raw) {
+  if (raw === undefined) return undefined;
+  // Present-but-invalid coverage is preserved as an empty map so receipts
+  // treat every source as unknown rather than inferring coverage.
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const entries = COVERAGE_SOURCES
+    .filter((source) => COVERAGE_STATES.includes(raw[source]))
+    .map((source) => [source, raw[source]]);
+  return Object.fromEntries(entries);
 }
 
 function normalizeResults(payload, maxResults, maxResultTextLength = DEFAULT_MAX_RESULT_TEXT_LENGTH, deduplicateResults = false) {
@@ -40,7 +62,9 @@ function normalizeResults(payload, maxResults, maxResultTextLength = DEFAULT_MAX
     : [];
   const warnings = !Array.isArray(payload) ? boundMessages(payload?.warnings) : [];
   const conflicts = !Array.isArray(payload) ? boundMessages(payload?.conflicts) : [];
-  if (!Array.isArray(raw)) return { results: [], warnings, conflicts };
+  const coverage = !Array.isArray(payload) ? normalizeCoverage(payload?.coverage) : undefined;
+  const extras = { warnings, conflicts, ...(coverage ? { coverage } : {}) };
+  if (!Array.isArray(raw)) return { results: [], ...extras };
   const results = raw.slice(0, maxResults).flatMap((item) => {
     if (!item || typeof item !== "object") return [];
     const rawText = String(item.text ?? item.content ?? "").trim();
@@ -69,7 +93,7 @@ function normalizeResults(payload, maxResults, maxResultTextLength = DEFAULT_MAX
     };
     return [entry];
   });
-  if (!deduplicateResults) return { results, warnings, conflicts };
+  if (!deduplicateResults) return { results, ...extras };
   const seen = new Set();
   const uniqueResults = results.filter((item) => {
     const identity = resultIdentity(item);
@@ -78,7 +102,7 @@ function normalizeResults(payload, maxResults, maxResultTextLength = DEFAULT_MAX
     seen.add(identity);
     return true;
   });
-  return { results: uniqueResults, warnings, conflicts };
+  return { results: uniqueResults, ...extras };
 }
 
 export async function searchMemory(query, config, fetchImpl = globalThis.fetch) {
@@ -140,4 +164,4 @@ export function formatMemoryContext(results, maxLength = DEFAULT_MAX_CONTEXT_LEN
   return buildMemoryContextDetails(results, maxLength).text;
 }
 
-export { normalizeConfig, normalizeResults };
+export { normalizeConfig, normalizeCoverage, normalizeResults };

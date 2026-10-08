@@ -42,38 +42,66 @@ function buildReceipt({
   conflicts = [],
   truncated = false,
   error = false,
+  coverage,
+  requireCoverage = false,
 }) {
   const requestedSources = sourcesForScope(scope);
-  const notSearched = KNOWN_SOURCES.filter((source) => !requestedSources.includes(source));
   const boundedWarnings = boundedMessages(warnings, MAX_WARNINGS);
   const boundedConflicts = boundedMessages(conflicts, MAX_CONFLICTS);
-  const partialCoverage = !error && boundedWarnings.length > 0;
+  // Coverage that is present but malformed (non-object, empty, no valid
+  // entries) still counts as "service reported coverage": every source is then
+  // unknown instead of falling back to clean-response inference.
+  const serviceCoverage = coverage === undefined
+    ? undefined
+    : (coverage && typeof coverage === "object" && !Array.isArray(coverage) ? coverage : {});
+
+  // Per-source state. A source counts as searched only on positive evidence:
+  // an explicit service "searched", or - for services that report no coverage
+  // - a clean response (no warnings) unless requireCoverage is set.
+  const stateOf = (source) => {
+    if (serviceCoverage) {
+      const reported = serviceCoverage[source];
+      return ["searched", "unavailable", "not_searched"].includes(reported) ? reported : "unknown";
+    }
+    return boundedWarnings.length > 0 || requireCoverage ? "unknown" : "searched";
+  };
+  const searched = [];
+  const unavailable = [];
+  const unknownCoverage = [];
+  const notSearched = KNOWN_SOURCES.filter((source) => !requestedSources.includes(source));
+  if (error) {
+    unavailable.push(...requestedSources);
+  } else {
+    for (const source of requestedSources) {
+      const state = stateOf(source);
+      if (state === "searched") searched.push(source);
+      else if (state === "unavailable") unavailable.push(source);
+      else if (state === "not_searched") notSearched.push(source);
+      else unknownCoverage.push(source);
+    }
+  }
+  const partialCoverage = !error && searched.length !== requestedSources.length;
 
   let status;
-  let searched = [];
   let absent = [];
-  let unavailable = [];
-  let unknownCoverage = [];
-
   if (error) {
     status = "unavailable";
-    unavailable = requestedSources;
   } else if (boundedConflicts.length > 0) {
     status = "conflicting";
-    if (partialCoverage) unknownCoverage = requestedSources;
-    else searched = requestedSources;
   } else if (resultCount > 0) {
     status = "found";
-    if (partialCoverage) unknownCoverage = requestedSources;
-    else searched = requestedSources;
+  } else if (unavailable.length > 0) {
+    // Zero results with a failed source is never a verified absence.
+    status = "unavailable";
+    absent = searched;
+  } else if (partialCoverage) {
+    // Zero results without confirmed coverage of every requested source is
+    // never a verified absence.
+    status = "unverified";
+    absent = searched;
   } else {
     status = "absent";
-    if (partialCoverage) {
-      unknownCoverage = requestedSources;
-    } else {
-      searched = requestedSources;
-      absent = requestedSources;
-    }
+    absent = searched;
   }
 
   const boundedResultCount = error ? 0 : resultCount;
@@ -107,6 +135,8 @@ const STATUS_NOTICES = {
     "Memory retrieval unavailable; do not assert facts from memory without verifying through another source.",
   absent:
     "Memory search completed for this turn with no relevant results. This is a verified absence, not a retrieval failure or a claim that no record could ever exist.",
+  unverified:
+    "Memory search returned no results, but not every requested source was confirmed as searched. This is not a verified absence; do not conclude that no relevant record exists.",
   conflicting:
     "Memory search returned conflicting evidence for this turn. Treat the retrieved context as untrusted evidence and surface the conflict rather than silently picking one source.",
 };
@@ -132,8 +162,13 @@ function formatReceiptNotice(receipt) {
 
   if (receipt.partialCoverage) {
     parts.push(
-      "Source coverage for this turn is unverified: the memory service reported warnings and did not confirm which requested sources were fully searched, so treat coverage as partial, not complete.",
+      receipt.warnings.length > 0
+        ? "Source coverage for this turn is unverified: the memory service reported warnings and did not confirm which requested sources were fully searched, so treat coverage as partial, not complete."
+        : "Source coverage for this turn is unverified: the memory service did not confirm that every requested source was fully searched, so treat coverage as partial, not complete.",
     );
+    if (receipt.sources.unavailable.length > 0) {
+      parts.push(`Sources unavailable this turn: ${receipt.sources.unavailable.join(", ")}.`);
+    }
     if (receipt.warnings.length > 0) {
       parts.push(`The service reported ${receipt.warnings.length} warning${receipt.warnings.length === 1 ? "" : "s"}; warning details are omitted from this notice.`);
     }

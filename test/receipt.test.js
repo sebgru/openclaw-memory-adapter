@@ -146,7 +146,7 @@ test("buildReceipt does not claim absence for a narrowed/all scope when warnings
         resultCount: 0,
         warnings: ["partial index"],
     });
-    assert.equal(receipt.status, "absent");
+    assert.equal(receipt.status, "unverified");
     assert.deepEqual(receipt.sources.absent, []);
     assert.deepEqual(receipt.sources.searched, []);
     assert.deepEqual(receipt.sources.unknownCoverage, ["main", "archive", "documents"]);
@@ -262,4 +262,124 @@ test("receiptTraceSummary exposes turnId, schemaVersion, status, timing, and bou
     assert.deepEqual(summary.timing, { startedAt: 10, endedAt: 25, durationMs: 15 });
     assert.equal(summary.warnings, undefined);
     assert.equal(summary.conflicts, undefined);
+});
+
+// ── per-source service coverage / strict mode ───────────────────────────────
+
+const base = { turnId: "c", scope: "all", startedAt: 0, endedAt: 1 };
+
+test("zero results with service-confirmed coverage of every source is a verified absence", () => {
+    const receipt = buildReceipt({ ...base, resultCount: 0, coverage: { main: "searched", archive: "searched", documents: "searched" } });
+    assert.equal(receipt.status, "absent");
+    assert.deepEqual(receipt.sources.absent, ["main", "archive", "documents"]);
+    assert.equal(receipt.partialCoverage, false);
+});
+
+test("zero results with one unavailable source is unavailable, absence limited to searched sources", () => {
+    const receipt = buildReceipt({ ...base, resultCount: 0, coverage: { main: "searched", archive: "unavailable", documents: "searched" } });
+    assert.equal(receipt.status, "unavailable");
+    assert.deepEqual(receipt.sources.absent, ["main", "documents"]);
+    assert.deepEqual(receipt.sources.unavailable, ["archive"]);
+    assert.equal(receipt.partialCoverage, true);
+    assert.match(formatReceiptNotice(receipt), /Sources unavailable this turn: archive\./);
+});
+
+test("coverage that omits a requested source leaves it unknown, never absent", () => {
+    const receipt = buildReceipt({ ...base, resultCount: 0, coverage: { main: "searched" } });
+    assert.equal(receipt.status, "unverified");
+    assert.deepEqual(receipt.sources.absent, ["main"]);
+    assert.deepEqual(receipt.sources.unknownCoverage, ["archive", "documents"]);
+    assert.equal(receipt.partialCoverage, true);
+    assert.match(formatReceiptNotice(receipt), /service did not confirm/);
+});
+
+test("service-reported not_searched moves a source to notSearched", () => {
+    const receipt = buildReceipt({ ...base, resultCount: 1, coverage: { main: "searched", archive: "searched", documents: "not_searched" } });
+    assert.deepEqual(receipt.sources.notSearched, ["documents"]);
+    assert.equal(receipt.partialCoverage, true);
+});
+
+test("explicit coverage is authoritative over warnings for sources it confirms", () => {
+    const receipt = buildReceipt({ ...base, resultCount: 0, warnings: ["noise"], coverage: { main: "searched", archive: "searched", documents: "searched" } });
+    assert.deepEqual(receipt.sources.absent, ["main", "archive", "documents"]);
+});
+
+test("requireCoverage without service coverage never reports absence", () => {
+    const receipt = buildReceipt({ ...base, resultCount: 0, requireCoverage: true });
+    assert.equal(receipt.status, "unverified");
+    assert.deepEqual(receipt.sources.absent, []);
+    assert.deepEqual(receipt.sources.searched, []);
+    assert.deepEqual(receipt.sources.unknownCoverage, ["main", "archive", "documents"]);
+    assert.equal(receipt.partialCoverage, true);
+});
+
+test("requireCoverage still honors explicit service coverage", () => {
+    const receipt = buildReceipt({ ...base, resultCount: 0, requireCoverage: true, coverage: { main: "searched", archive: "searched", documents: "searched" } });
+    assert.deepEqual(receipt.sources.absent, ["main", "archive", "documents"]);
+});
+
+test("error keeps every requested source unavailable even if coverage claims searched", () => {
+    const receipt = buildReceipt({ ...base, error: true, coverage: { main: "searched", archive: "searched", documents: "searched" } });
+    assert.equal(receipt.status, "unavailable");
+    assert.deepEqual(receipt.sources.unavailable, ["main", "archive", "documents"]);
+    assert.deepEqual(receipt.sources.absent, []);
+});
+
+test("invalid coverage state values are treated as unknown", () => {
+    const receipt = buildReceipt({ ...base, resultCount: 0, coverage: { main: "yes", archive: "searched", documents: "searched" } });
+    assert.deepEqual(receipt.sources.unknownCoverage, ["main"]);
+    assert.deepEqual(receipt.sources.absent, ["archive", "documents"]);
+});
+
+// ── zero results never claim verified absence without confirmed coverage ────
+
+const NO_ABSENCE = /verified absence|verified absent/;
+const notAbsent = (receipt) => {
+    assert.notEqual(receipt.status, "absent");
+    assert.doesNotMatch(formatReceiptNotice(receipt), /This is a verified absence/);
+};
+
+test("strict mode with no coverage is unverified, not absent", () => {
+    const receipt = buildReceipt({ ...base, resultCount: 0, requireCoverage: true });
+    assert.equal(receipt.status, "unverified");
+    notAbsent(receipt);
+    assert.match(formatReceiptNotice(receipt), /not a verified absence/);
+});
+
+test("warnings with no coverage are unverified, not absent", () => {
+    const receipt = buildReceipt({ ...base, resultCount: 0, warnings: ["degraded"] });
+    assert.equal(receipt.status, "unverified");
+    notAbsent(receipt);
+});
+
+test("partial coverage map is unverified, not absent", () => {
+    const receipt = buildReceipt({ ...base, resultCount: 0, coverage: { main: "searched", archive: "searched" } });
+    assert.equal(receipt.status, "unverified");
+    assert.deepEqual(receipt.sources.unknownCoverage, ["documents"]);
+    notAbsent(receipt);
+});
+
+test("requested source reported not_searched is unverified, not absent", () => {
+    const receipt = buildReceipt({ ...base, resultCount: 0, coverage: { main: "searched", archive: "searched", documents: "not_searched" } });
+    assert.equal(receipt.status, "unverified");
+    assert.deepEqual(receipt.sources.notSearched, ["documents"]);
+    notAbsent(receipt);
+});
+
+test("entirely invalid or empty coverage map makes every source unknown", () => {
+    for (const coverage of [{}, { main: "yes", archive: 1 }, "searched", null, []]) {
+        const receipt = buildReceipt({ ...base, resultCount: 0, coverage });
+        assert.equal(receipt.status, "unverified");
+        assert.deepEqual(receipt.sources.searched, []);
+        assert.deepEqual(receipt.sources.unknownCoverage, ["main", "archive", "documents"]);
+        notAbsent(receipt);
+    }
+});
+
+test("absent notice wording only appears for confirmed full coverage", () => {
+    const clean = buildReceipt({ ...base, resultCount: 0 });
+    assert.equal(clean.status, "absent");
+    assert.match(formatReceiptNotice(clean), NO_ABSENCE);
+    const narrowed = buildReceipt({ ...base, scope: "main", resultCount: 0, coverage: { main: "searched" } });
+    assert.equal(narrowed.status, "absent");
 });

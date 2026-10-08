@@ -139,3 +139,61 @@ test("search tool exposes found, absent, partial, and unavailable versioned rece
     globalThis.fetch = previousFetch;
   }
 });
+
+test("tool receipt: zero results is absent only with service-confirmed coverage; timeout stays unavailable", async () => {
+  const previousFetch = globalThis.fetch;
+  try {
+    const instance = harness({ endpoint: "http://memory.test" });
+    const full = { main: "searched", archive: "searched", documents: "searched" };
+    globalThis.fetch = async () => ({ ok: true, json: async () => ({ results: [], coverage: full }) });
+    const absent = await instance.tool.execute("c1", { query: "missing" });
+    assert.equal(absent.details.receipt.status, "absent");
+    assert.deepEqual(absent.details.receipt.sources.absent, ["main", "archive", "documents"]);
+
+    globalThis.fetch = async () => ({ ok: true, json: async () => ({ results: [], coverage: { ...full, archive: "unavailable" } }) });
+    const partial = await instance.tool.execute("c2", { query: "missing" });
+    assert.equal(partial.details.receipt.status, "unavailable");
+    assert.deepEqual(partial.details.receipt.sources.absent, ["main", "documents"]);
+
+    globalThis.fetch = async () => { throw new Error("timeout"); };
+    const timeout = await instance.tool.execute("c3", { query: "missing" });
+    assert.equal(timeout.details.receipt.status, "unavailable");
+    assert.deepEqual(timeout.details.receipt.sources.absent, []);
+
+    const strict = harness({ endpoint: "http://memory.test", requireServiceCoverage: true });
+    globalThis.fetch = async () => ({ ok: true, json: async () => ({ results: [] }) });
+    const unconfirmed = await strict.tool.execute("c4", { query: "missing" });
+    assert.equal(unconfirmed.details.receipt.status, "unverified");
+    assert.deepEqual(unconfirmed.details.receipt.sources.absent, []);
+    assert.deepEqual(unconfirmed.details.receipt.sources.unknownCoverage, ["main", "archive", "documents"]);
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+});
+
+test("prompt hook receipt honors requireServiceCoverage with a zero-result response", async () => {
+  const previousFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({ ok: true, json: async () => ({ results: [] }) });
+  try {
+    const strict = harness({ endpoint: "http://memory.test", turnReceipts: true, requireServiceCoverage: true });
+    const output = await strict.beforePrompt({ prompt: "question" }, { agentId: "main" });
+    assert.match(output.prependContext, /did not confirm that every requested source/);
+    assert.doesNotMatch(output.prependContext, /This is a verified absence/);
+    assert.match(strict.traces[0], /"unverified"/);
+    assert.match(strict.traces[0], /"unknownCoverage":\["main","archive","documents"\]/);
+
+    // coverage present but invalid must not fall back to legacy inference
+    globalThis.fetch = async () => ({ ok: true, json: async () => ({ results: [], coverage: {} }) });
+    const invalid = harness({ endpoint: "http://memory.test", turnReceipts: true });
+    const invalidOut = await invalid.beforePrompt({ prompt: "question" }, { agentId: "main" });
+    assert.doesNotMatch(invalidOut.prependContext, /This is a verified absence/);
+    assert.match(invalid.traces[0], /"unverified"/);
+
+    globalThis.fetch = async () => ({ ok: true, json: async () => ({ results: [] }) });
+    const legacy = harness({ endpoint: "http://memory.test", turnReceipts: true });
+    const legacyOut = await legacy.beforePrompt({ prompt: "question" }, { agentId: "main" });
+    assert.match(legacyOut.prependContext, /verified absence/);
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+});
