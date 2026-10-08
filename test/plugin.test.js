@@ -118,6 +118,33 @@ test("prompt hook makes one bounded exact-entity follow-up when baseline results
   }
 });
 
+test("prompt hook folds a current-prompt alias pair into the same single follow-up", async () => {
+  const previousFetch = globalThis.fetch;
+  const queries = [];
+  globalThis.fetch = async (url) => {
+    const parsed = new URL(url);
+    queries.push(parsed.searchParams.get("q"));
+    return {
+      ok: true,
+      json: async () => ({ results: [queries.length === 1
+        ? result("General context")
+        : { ...result("Katja Ekaterina profile"), path: "memory/katja.md", line: 9 }] }),
+    };
+  };
+  try {
+    const instance = harness({ endpoint: "http://memory.test" });
+    const output = await instance.beforePrompt(
+      { prompt: "Please check Katja aka Ekaterina." },
+      { agentId: "main" },
+    );
+    assert.equal(queries.length, 2);
+    assert.equal(queries[1], "Katja Ekaterina");
+    assert.match(output.prependContext, /Katja Ekaterina profile/);
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+});
+
 test("prompt hook skips a targeted lookup when baseline results already contain the entity", async () => {
   const previousFetch = globalThis.fetch;
   let calls = 0;

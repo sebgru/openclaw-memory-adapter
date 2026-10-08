@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   extractEntityTarget,
+  expandLinkedAlias,
   hasEntityEvidence,
   isDocumentIdentifier,
   mergeSearchResponses,
@@ -13,12 +14,23 @@ test("extracts explicit, structured, and multi-token targets without guessing fi
   assert.equal(extractEntityTarget("Find mail for anna@example.org"), "anna@example.org");
   assert.equal(extractEntityTarget("Open memory/facts/sebastian.json"), "memory/facts/sebastian.json");
   assert.equal(extractEntityTarget("Where is Anna?"), undefined);
+  assert.equal(extractEntityTarget("Please check Katja aka Ekaterina."), "Katja");
+  assert.equal(extractEntityTarget('Search "Katja" (also known as "Ekaterina").'), "Katja");
   assert.equal(extractEntityTarget("Does OpenClaw support that?"), undefined);
   assert.equal(extractEntityTarget(undefined), undefined);
   assert.equal(extractEntityTarget(' "   " '), undefined);
   assert.equal(extractEntityTarget(' "foo.md" '), "foo.md");
   assert.equal(extractEntityTarget(`"${"x".repeat(161)}"`), undefined);
   assert.equal(extractEntityTarget(`${"x".repeat(4001)} "Katja Grünwedel"`), undefined);
+});
+
+test("expands only an explicitly linked alias from the current prompt", () => {
+  assert.equal(expandLinkedAlias("Please check Katja aka Ekaterina.", "Katja"), "Katja Ekaterina");
+  assert.equal(expandLinkedAlias('Look up "Katja" also known as "Ekaterina".', "Katja"), "Katja Ekaterina");
+  assert.equal(expandLinkedAlias("Katja and Ekaterina are colleagues.", "Katja"), undefined);
+  assert.equal(expandLinkedAlias("Katja aka Ekaterina", "Ekaterina"), undefined);
+  assert.equal(expandLinkedAlias("Katja aka Ekaterina", undefined), undefined);
+  assert.equal(expandLinkedAlias(undefined, "Katja"), undefined);
 });
 
 test("entity evidence is case-insensitive and may be in the result path", () => {
