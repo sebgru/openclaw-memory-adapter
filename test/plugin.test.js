@@ -86,6 +86,173 @@ test("prompt hook creates ephemeral bounded receipt trace when enabled", async (
   }
 });
 
+test("prompt hook makes one bounded exact-entity follow-up when baseline results omit the target", async () => {
+  const previousFetch = globalThis.fetch;
+  const requests = [];
+  globalThis.fetch = async (url) => {
+    const parsed = new URL(url);
+    requests.push(parsed.searchParams.get("q"));
+    const isTargeted = requests.length === 2;
+    return {
+      ok: true,
+      json: async () => ({
+        results: [isTargeted
+          ? { ...result("Katja Grünwedel joined TomTom.", "memory"), path: "memory/katja.md", line: 9 }
+          : result("General hiring context", "memory")],
+        coverage: { main: "searched", archive: "searched", documents: "searched" },
+      }),
+    };
+  };
+  try {
+    const instance = harness({ endpoint: "http://memory.test", turnReceipts: true, maxResults: 5 });
+    const output = await instance.beforePrompt(
+      { prompt: 'What is known about "Katja Grünwedel"?' },
+      { agentId: "main" },
+    );
+    assert.equal(requests.length, 2);
+    assert.equal(requests[1], "Katja Grünwedel");
+    assert.match(output.prependContext, /Katja Grünwedel joined TomTom/);
+    assert.match(instance.traces[0], /"status":"found"/);
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+});
+
+test("prompt hook skips a targeted lookup when baseline results already contain the entity", async () => {
+  const previousFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    return {
+      ok: true,
+      json: async () => ({ results: [result('Katja Grünwedel profile')] }),
+    };
+  };
+  try {
+    const instance = harness({ endpoint: "http://memory.test" });
+    const output = await instance.beforePrompt(
+      { prompt: 'Tell me about "Katja Grünwedel".' },
+      { agentId: "main" },
+    );
+    assert.equal(calls, 1);
+    assert.match(output.prependContext, /Katja Grünwedel profile/);
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+});
+
+test("prompt hook uses default target limits and discloses a failed follow-up in legacy mode", async () => {
+  const previousFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    if (calls === 2) throw new Error("targeted lookup failed");
+    return { ok: true, json: async () => ({ results: [result("General memory") ] }) };
+  };
+  try {
+    const instance = harness({ endpoint: "http://memory.test", timeoutMs: 1000 });
+    const output = await instance.beforePrompt(
+      { prompt: 'Find "Katja Grünwedel".' },
+      { agentId: "main" },
+    );
+    assert.equal(calls, 2);
+    assert.match(output.prependContext, /do not claim that entity was absent/);
+    assert.equal(instance.warnings.length, 1);
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+});
+
+test("prompt hook bounds successful follow-up results to the default limit", async () => {
+  const previousFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    return {
+      ok: true,
+      json: async () => ({
+        results: calls === 1
+          ? [result("General context")]
+          : [{ ...result("Katja Grünwedel fact"), path: "memory/katja.md", line: 9 }],
+      }),
+    };
+  };
+  try {
+    const instance = harness({ endpoint: "http://memory.test" });
+    const output = await instance.beforePrompt(
+      { prompt: 'Find "Katja Grünwedel".' },
+      { agentId: "main" },
+    );
+    assert.equal(calls, 2);
+    assert.match(output.prependContext, /Katja Grünwedel fact/);
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+});
+
+test("prompt hook routes an explicit document path follow-up to the documents source", async () => {
+  const previousFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (url) => {
+    const parsed = new URL(url);
+    calls.push({ query: parsed.searchParams.get("q"), scope: parsed.searchParams.get("scope") });
+    return {
+      ok: true,
+      json: async () => ({
+        results: calls.length === 1
+          ? [result("General context")]
+          : [{ ...result("Exact document match"), path: "memory/facts/sebastian.json", line: 3 }],
+        coverage: calls.length === 1
+          ? { main: "searched", archive: "searched", documents: "searched" }
+          : { main: "not_searched", archive: "not_searched", documents: "searched" },
+      }),
+    };
+  };
+  try {
+    const instance = harness({ endpoint: "http://memory.test", turnReceipts: true });
+    const output = await instance.beforePrompt(
+      { prompt: "Check memory/facts/sebastian.json" },
+      { agentId: "main" },
+    );
+    assert.deepEqual(calls, [
+      { query: "Check memory/facts/sebastian.json", scope: "all" },
+      { query: "memory/facts/sebastian.json", scope: "documents" },
+    ]);
+    assert.match(output.prependContext, /Exact document match/);
+    assert.match(instance.traces[0], /"searched":\["main","archive","documents"\]/);
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+});
+
+test("failed entity follow-up is disclosed and cannot become a verified absence", async () => {
+  const previousFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    if (calls === 2) throw new Error("targeted lookup failed");
+    return {
+      ok: true,
+      json: async () => ({
+        results: [],
+        coverage: { main: "searched", archive: "searched", documents: "searched" },
+      }),
+    };
+  };
+  try {
+    const instance = harness({ endpoint: "http://memory.test", turnReceipts: true });
+    const output = await instance.beforePrompt(
+      { prompt: 'Find "Katja Grünwedel".' },
+      { agentId: "main" },
+    );
+    assert.match(output.prependContext, /not every requested source was confirmed as searched|coverage is unverified/i);
+    assert.doesNotMatch(output.prependContext, /This is a verified absence/i);
+    assert.match(instance.traces[0], /"status":"unverified"/);
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+});
+
 test("prompt hook distinguishes retrieval failure in legacy and receipt modes", async () => {
   const previousFetch = globalThis.fetch;
   globalThis.fetch = async () => { throw new Error("service offline"); };

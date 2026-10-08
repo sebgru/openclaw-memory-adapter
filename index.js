@@ -1,8 +1,11 @@
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import { buildMemoryContextDetails, formatMemoryContext, searchUnified } from "./src/client.js";
 import { buildReceipt, formatReceiptNotice, receiptTraceSummary } from "./src/receipt.js";
+import { extractEntityTarget, hasEntityEvidence, isDocumentIdentifier, mergeSearchResponses } from "./src/entity-query.js";
 
 const FAILURE_NOTICE = "Memory retrieval unavailable; do not assert facts from memory without verifying through another source.";
+const DEFAULT_TIMEOUT_MS = 1500;
+const MAX_TARGETED_SEARCH_MS = 6000;
 
 function nextTurnId(event, ctx) {
   return (
@@ -64,15 +67,63 @@ export default definePluginEntry({
       const scope = "all";
       const turnId = turnReceipts ? nextTurnId(event, ctx) : undefined;
       const startedAt = turnReceipts ? Date.now() : undefined;
+      const retrievalStartedAt = Date.now();
       try {
-        const { results, warnings, conflicts, coverage } = await searchUnified(event.prompt, { ...config, scope, profile: "prompt" });
+        const entityTarget = extractEntityTarget(event.prompt);
+        const targetScope = isDocumentIdentifier(entityTarget) ? "documents" : scope;
+        const configuredTimeoutMs = Number.isInteger(config.timeoutMs) ? config.timeoutMs : DEFAULT_TIMEOUT_MS;
+        const boundedTimeoutMs = entityTarget
+          ? Math.min(configuredTimeoutMs, MAX_TARGETED_SEARCH_MS)
+          : configuredTimeoutMs;
+        let retrieval = await searchUnified(event.prompt, {
+          ...config,
+          scope,
+          profile: "prompt",
+          timeoutMs: boundedTimeoutMs,
+        });
+        let targetedSearchUnavailable = false;
+        if (entityTarget && !hasEntityEvidence(retrieval.results, entityTarget)) {
+          const remainingMs = MAX_TARGETED_SEARCH_MS - (Date.now() - retrievalStartedAt);
+          // Leave a small floor for the HTTP request itself; never start a
+          // second request that would exceed this turn's six-second budget.
+          if (remainingMs >= 250) {
+            try {
+              const targeted = await searchUnified(entityTarget, {
+                ...config,
+                scope: targetScope,
+                profile: "prompt",
+                timeoutMs: Math.min(configuredTimeoutMs, remainingMs),
+              });
+              retrieval = mergeSearchResponses(
+                retrieval,
+                targeted,
+                Number.isInteger(config.maxResults) ? config.maxResults : 5,
+              );
+            } catch {
+              targetedSearchUnavailable = true;
+              retrieval = {
+                ...retrieval,
+                coverage: undefined,
+                warnings: [...new Set([
+                  ...retrieval.warnings,
+                  "targeted entity search unavailable",
+                ])],
+              };
+            }
+          }
+        }
+        const { results, warnings, conflicts, coverage } = retrieval;
         if (warnings?.length) {
           api.logger.warn?.(`memory-adapter: service reported ${warnings.length} warning(s); details omitted`);
         }
         const maxContextLength = Number.isInteger(config.maxContextLength) ? config.maxContextLength : undefined;
         if (!turnReceipts) {
           const context = formatMemoryContext(results, maxContextLength);
-          return context ? { prependContext: context } : undefined;
+          const entityWarning = targetedSearchUnavailable
+            ? "The targeted memory search for an explicitly named entity was unavailable; do not claim that entity was absent."
+            : "";
+          const prependContext = [context, entityWarning].filter(Boolean).join("\n\n");
+          return prependContext ? { prependContext } : undefined;
         }
         const { text: context, truncated, includedCount } = buildMemoryContextDetails(results, maxContextLength);
         const receipt = buildReceipt({
@@ -102,7 +153,15 @@ export default definePluginEntry({
         logReceiptTrace(api, receipt);
         return { prependContext: formatReceiptNotice(receipt) };
       }
-    }, { timeoutMs: (config.timeoutMs ?? 1500) + 250 });
+    }, {
+      timeoutMs: Math.max(
+        Number.isInteger(config.timeoutMs) ? config.timeoutMs : DEFAULT_TIMEOUT_MS,
+        Math.min(
+          MAX_TARGETED_SEARCH_MS,
+          2 * (Number.isInteger(config.timeoutMs) ? config.timeoutMs : DEFAULT_TIMEOUT_MS),
+        ),
+      ) + 250,
+    });
     api.registerTool((_ctx) => ({
       name: "unified_memory_search",
       label: "Unified Memory Search",
