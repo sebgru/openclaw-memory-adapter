@@ -29,7 +29,9 @@ indexer and never invokes indexing.
   multi-token proper name) and the baseline results do not contain it, the
   hook makes at most one exact-target follow-up search. Filename/path targets
   use `scope=documents`; other targets use `scope=all`. It does not guess
-  aliases or treat a missing result as proof of absence. The baseline and
+  aliases: an explicitly linked `aka`/`alias`/`also known as` pair in the
+  current prompt is included in the same query. A missing result is not proof
+  of absence. The baseline and
   follow-up share a 6-second retrieval budget; a failed follow-up is disclosed
   and prevents a verified-absence claim.
 

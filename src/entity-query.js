@@ -1,7 +1,7 @@
 const MAX_ENTITY_QUERY_LENGTH = 160;
 const COMMON_OPENERS = new Set([
   "A", "An", "And", "Are", "As", "At", "Because", "But", "Can", "Could",
-  "Did", "Do", "Does", "For", "From", "Hello", "Help", "Hey", "How", "I",
+  "Check", "Did", "Do", "Does", "Find", "For", "From", "Hello", "Help", "Hey", "How", "I", "Look",
   "In", "Is", "It", "Maybe", "My", "Of", "On", "Or", "Please", "Should",
   "Tell", "That", "The", "This", "To", "We", "What", "When", "Where", "Which",
   "Who", "Why", "Would", "You",
@@ -9,8 +9,19 @@ const COMMON_OPENERS = new Set([
 const SOURCES = ["main", "archive", "documents"];
 
 function cleanTarget(value) {
-  const target = String(value).replace(/\s+/g, " ").trim();
+  const target = String(value).replace(/\s+/g, " ").trim().replace(/[.,;:!?]+$/u, "");
   return target.length > 0 && target.length <= MAX_ENTITY_QUERY_LENGTH ? target : undefined;
+}
+
+const LINKED_ALIAS = /\b(\p{Lu}[\p{L}\p{M}'’.-]*(?:\s+\p{Lu}[\p{L}\p{M}'’.-]*){0,2})["'`]?\s*\(?\s*(?:,\s*)?(?:a\.k\.a\.|aka|alias|also known as)\s+["'`]?((?:\p{Lu}[\p{L}\p{M}'’.-]*)(?:\s+\p{Lu}[\p{L}\p{M}'’.-]*){0,2})["'`]?/gu;
+
+function linkedAliases(prompt) {
+  const text = String(prompt ?? "").slice(0, 4000);
+  const pairs = [];
+  for (const match of text.matchAll(LINKED_ALIAS)) {
+    pairs.push({ index: match.index, primary: match[1], alias: match[2] });
+  }
+  return pairs;
 }
 
 /**
@@ -25,6 +36,8 @@ export function extractEntityTarget(prompt) {
     const target = cleanTarget(value);
     if (target) candidates.push({ index, target, priority });
   };
+
+  for (const pair of linkedAliases(text)) add(pair.index, pair.primary, 0);
 
   const emails = /[\p{L}\p{N}._%+-]+@[\p{L}\p{N}.-]+\.[\p{L}]{2,}/gu;
   for (const match of text.matchAll(emails)) add(match.index, match[0], 0);
@@ -48,6 +61,15 @@ export function extractEntityTarget(prompt) {
 
   candidates.sort((a, b) => a.index - b.index || a.priority - b.priority);
   return candidates.length ? candidates[0].target : undefined;
+}
+
+/** Join only alias pairs explicitly linked in the current prompt. */
+export function expandLinkedAlias(prompt, target) {
+  const selected = String(target ?? "").trim();
+  if (!selected) return undefined;
+  const pair = linkedAliases(prompt).find(({ primary }) =>
+    primary.toLocaleLowerCase() === selected.toLocaleLowerCase());
+  return pair ? cleanTarget(`${pair.primary} ${pair.alias}`) : undefined;
 }
 
 export function hasEntityEvidence(results, target) {

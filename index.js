@@ -1,7 +1,7 @@
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import { buildMemoryContextDetails, formatMemoryContext, searchUnified } from "./src/client.js";
 import { buildReceipt, formatReceiptNotice, receiptTraceSummary } from "./src/receipt.js";
-import { extractEntityTarget, hasEntityEvidence, isDocumentIdentifier, mergeSearchResponses } from "./src/entity-query.js";
+import { expandLinkedAlias, extractEntityTarget, hasEntityEvidence, isDocumentIdentifier, mergeSearchResponses } from "./src/entity-query.js";
 
 const FAILURE_NOTICE = "Memory retrieval unavailable; do not assert facts from memory without verifying through another source.";
 const DEFAULT_TIMEOUT_MS = 1500;
@@ -70,6 +70,7 @@ export default definePluginEntry({
       const retrievalStartedAt = Date.now();
       try {
         const entityTarget = extractEntityTarget(event.prompt);
+        const expandedQuery = expandLinkedAlias(event.prompt, entityTarget) ?? entityTarget;
         const targetScope = isDocumentIdentifier(entityTarget) ? "documents" : scope;
         const configuredTimeoutMs = Number.isInteger(config.timeoutMs) ? config.timeoutMs : DEFAULT_TIMEOUT_MS;
         const boundedTimeoutMs = entityTarget
@@ -88,7 +89,7 @@ export default definePluginEntry({
           // second request that would exceed this turn's six-second budget.
           if (remainingMs >= 250) {
             try {
-              const targeted = await searchUnified(entityTarget, {
+              const targeted = await searchUnified(expandedQuery, {
                 ...config,
                 scope: targetScope,
                 profile: "prompt",
