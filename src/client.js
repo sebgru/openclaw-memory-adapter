@@ -191,8 +191,11 @@ export function buildMemoryContextDetails(results, maxLength = DEFAULT_MAX_CONTE
   let length = 0;
   let truncated = false;
   for (const [index, result] of results.entries()) {
-    const location = [result.source, result.path, result.line ? `line ${result.line}` : ""]
-      .filter(Boolean).join(" / ");
+    const location = provenanceLabel(result.provenance) || [
+      result.source,
+      result.path,
+      result.line ? `line ${result.line}` : "",
+    ].filter(Boolean).join(" / ");
     const alternateProvenance = (Array.isArray(result.alternateProvenance)
       ? result.alternateProvenance
       : result.alternateProvenance ? [result.alternateProvenance] : [])
