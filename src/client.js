@@ -4,6 +4,8 @@ const DEFAULT_MAX_QUERY_LENGTH = 4000;
 const DEFAULT_MAX_CONTEXT_LENGTH = 12000;
 const DEFAULT_MAX_RESULT_TEXT_LENGTH = 2000;
 const MAX_SERVICE_MESSAGE_LENGTH = 256;
+const MAX_PROVENANCE_FIELD_LENGTH = 256;
+const MAX_ALTERNATE_PROVENANCE = 3;
 const VALID_SCOPES = ["all", "main", "archive", "documents"];
 const VALID_PROFILES = ["prompt", "tool"];
 const COVERAGE_SOURCES = ["main", "archive", "documents"];
@@ -53,6 +55,50 @@ function normalizeCoverage(raw) {
   return Object.fromEntries(entries);
 }
 
+function cleanProvenanceText(value) {
+  return String(value)
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\u0000-\u001f\u007f-\u009f]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, MAX_PROVENANCE_FIELD_LENGTH);
+}
+
+function normalizeProvenance(raw) {
+  if (typeof raw === "string") return cleanProvenanceText(raw) || undefined;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const result = {};
+  for (const key of ["source", "path", "heading"]) {
+    if (typeof raw[key] === "string") {
+      const value = cleanProvenanceText(raw[key]);
+      if (value) result[key] = value;
+    }
+  }
+  if (Number.isInteger(raw.line) && raw.line >= 0) result.line = raw.line;
+  return Object.keys(result).length ? result : undefined;
+}
+
+function normalizeAlternateProvenance(raw) {
+  if (Array.isArray(raw)) {
+    const values = raw.slice(0, MAX_ALTERNATE_PROVENANCE)
+      .map(normalizeProvenance)
+      .filter(Boolean);
+    return values.length ? values : undefined;
+  }
+  return normalizeProvenance(raw);
+}
+
+function provenanceLabel(value) {
+  if (typeof value === "string") return value;
+  if (!value || typeof value !== "object") return "";
+  return [
+    value.source,
+    value.path,
+    value.heading,
+    Number.isInteger(value.line) ? `line ${value.line}` : "",
+  ].filter(Boolean).join(" / ");
+}
+
 function normalizeResults(payload, maxResults, maxResultTextLength = DEFAULT_MAX_RESULT_TEXT_LENGTH, deduplicateResults = false) {
   const raw = Array.isArray(payload) ? payload : payload?.results;
   const boundMessages = (messages) => Array.isArray(messages)
@@ -77,6 +123,8 @@ function normalizeResults(payload, maxResults, maxResultTextLength = DEFAULT_MAX
     const lexicalScore = Number(item.lexical_score);
     const semanticScore = Number(item.semantic_score);
     const relevanceScore = Number(item.relevance_score);
+    const provenance = normalizeProvenance(item.provenance);
+    const alternateProvenance = normalizeAlternateProvenance(item.alternate_provenance);
     const entry = {
       text,
       source,
@@ -88,8 +136,8 @@ function normalizeResults(payload, maxResults, maxResultTextLength = DEFAULT_MAX
       ...(Number.isFinite(lexicalScore) ? { lexicalScore } : {}),
       ...(Number.isFinite(semanticScore) ? { semanticScore } : {}),
       ...(Number.isFinite(relevanceScore) ? { relevanceScore } : {}),
-      ...(item.provenance ? { provenance: String(item.provenance) } : {}),
-      ...(item.alternate_provenance ? { alternateProvenance: String(item.alternate_provenance) } : {}),
+      ...(provenance ? { provenance } : {}),
+      ...(alternateProvenance ? { alternateProvenance } : {}),
     };
     return [entry];
   });
@@ -143,9 +191,20 @@ export function buildMemoryContextDetails(results, maxLength = DEFAULT_MAX_CONTE
   let length = 0;
   let truncated = false;
   for (const [index, result] of results.entries()) {
-    const location = [result.source, result.path, result.line ? `line ${result.line}` : ""]
-      .filter(Boolean).join(" / ");
-    const line = `${index + 1}. ${result.text}${location ? ` (${location})` : ""}`;
+    const location = provenanceLabel(result.provenance) || [
+      result.source,
+      result.path,
+      result.line ? `line ${result.line}` : "",
+    ].filter(Boolean).join(" / ");
+    const alternateProvenance = (Array.isArray(result.alternateProvenance)
+      ? result.alternateProvenance
+      : result.alternateProvenance ? [result.alternateProvenance] : [])
+      .map(provenanceLabel)
+      .filter(Boolean);
+    const alternate = alternateProvenance.length
+      ? ` (also found at ${alternateProvenance.join("; ")})`
+      : "";
+    const line = `${index + 1}. ${result.text}${location ? ` (${location})` : ""}${alternate}`;
     if (length + line.length > maxLength) {
       truncated = true;
       break;
