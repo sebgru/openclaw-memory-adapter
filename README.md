@@ -47,7 +47,10 @@ invoke directly:
 
 Results include source metadata (path, heading, line), relevance/lexical/
 semantic scores, provenance, and alternate provenance when the service
-provides them. Per-result text is bounded to `maxResultTextLength` and total
+provides them. Structured provenance is preserved as bounded source/path/
+heading/line fields (legacy string provenance remains supported); up to three
+alternate citations are retained and shown in injected context. Per-result
+text is bounded to `maxResultTextLength` and total
 injected context is bounded to `maxContextLength`. Service warnings are
 surfaced alongside results. The tool response's `details.receipt` carries the
 schema-v2 status/source-coverage receipt for that explicit search; it contains
