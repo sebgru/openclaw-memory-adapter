@@ -10,7 +10,7 @@ import {
 
 test("extracts explicit, structured, and multi-token targets without guessing first names", () => {
   assert.equal(extractEntityTarget('Please verify "Riley Sample".'), "Riley Sample");
-  assert.equal(extractEntityTarget("Did Casey Example work at TomTom?"), "Casey Example");
+  assert.equal(extractEntityTarget("Did Casey Example work at Example Corp.?"), "Casey Example");
   assert.equal(extractEntityTarget("Find mail for person@example.test"), "person@example.test");
   assert.equal(extractEntityTarget("Open memory/facts/owner.json"), "memory/facts/owner.json");
   assert.equal(extractEntityTarget("Where is Riley?"), undefined);

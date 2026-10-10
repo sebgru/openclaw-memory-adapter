@@ -97,7 +97,7 @@ test("prompt hook makes one bounded exact-entity follow-up when baseline results
       ok: true,
       json: async () => ({
         results: [isTargeted
-          ? { ...result("Riley Sample joined TomTom.", "memory"), path: "memory/riley.md", line: 9 }
+          ? { ...result("Riley Sample joined Example Corp..", "memory"), path: "memory/riley.md", line: 9 }
           : result("General hiring context", "memory")],
         coverage: { main: "searched", archive: "searched", documents: "searched" },
       }),
@@ -111,7 +111,7 @@ test("prompt hook makes one bounded exact-entity follow-up when baseline results
     );
     assert.equal(requests.length, 2);
     assert.equal(requests[1], "Riley Sample");
-    assert.match(output.prependContext, /Riley Sample joined TomTom/);
+    assert.match(output.prependContext, /Riley Sample joined Example Corp./);
     assert.match(instance.traces[0], /"status":"found"/);
   } finally {
     globalThis.fetch = previousFetch;
