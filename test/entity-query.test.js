@@ -9,45 +9,45 @@ import {
 } from "../src/entity-query.js";
 
 test("extracts explicit, structured, and multi-token targets without guessing first names", () => {
-  assert.equal(extractEntityTarget('Please verify "Katja Grünwedel".'), "Katja Grünwedel");
-  assert.equal(extractEntityTarget("Did Anna Schmidt work at TomTom?"), "Anna Schmidt");
-  assert.equal(extractEntityTarget("Find mail for anna@example.org"), "anna@example.org");
-  assert.equal(extractEntityTarget("Open memory/facts/sebastian.json"), "memory/facts/sebastian.json");
-  assert.equal(extractEntityTarget("Where is Anna?"), undefined);
-  assert.equal(extractEntityTarget("Please check Katja aka Ekaterina."), "Katja");
-  assert.equal(extractEntityTarget('Search "Katja" (also known as "Ekaterina").'), "Katja");
+  assert.equal(extractEntityTarget('Please verify "Riley Sample".'), "Riley Sample");
+  assert.equal(extractEntityTarget("Did Casey Example work at Example Corp.?"), "Casey Example");
+  assert.equal(extractEntityTarget("Find mail for person@example.test"), "person@example.test");
+  assert.equal(extractEntityTarget("Open memory/facts/owner.json"), "memory/facts/owner.json");
+  assert.equal(extractEntityTarget("Where is Riley?"), undefined);
+  assert.equal(extractEntityTarget("Please check Riley aka Jordan."), "Riley");
+  assert.equal(extractEntityTarget('Search "Riley" (also known as "Jordan").'), "Riley");
   assert.equal(extractEntityTarget("Does OpenClaw support that?"), undefined);
   assert.equal(extractEntityTarget(undefined), undefined);
   assert.equal(extractEntityTarget(' "   " '), undefined);
   assert.equal(extractEntityTarget(' "foo.md" '), "foo.md");
   assert.equal(extractEntityTarget(`"${"x".repeat(161)}"`), undefined);
-  assert.equal(extractEntityTarget(`${"x".repeat(4001)} "Katja Grünwedel"`), undefined);
+  assert.equal(extractEntityTarget(`${"x".repeat(4001)} "Riley Sample"`), undefined);
 });
 
 test("expands only an explicitly linked alias from the current prompt", () => {
-  assert.equal(expandLinkedAlias("Please check Katja aka Ekaterina.", "Katja"), "Katja Ekaterina");
-  assert.equal(expandLinkedAlias('Look up "Katja" also known as "Ekaterina".', "Katja"), "Katja Ekaterina");
-  assert.equal(expandLinkedAlias("Katja and Ekaterina are colleagues.", "Katja"), undefined);
-  assert.equal(expandLinkedAlias("Katja aka Ekaterina", "Ekaterina"), undefined);
-  assert.equal(expandLinkedAlias("Katja aka Ekaterina", undefined), undefined);
-  assert.equal(expandLinkedAlias(undefined, "Katja"), undefined);
+  assert.equal(expandLinkedAlias("Please check Riley aka Jordan.", "Riley"), "Riley Jordan");
+  assert.equal(expandLinkedAlias('Look up "Riley" also known as "Jordan".', "Riley"), "Riley Jordan");
+  assert.equal(expandLinkedAlias("Riley and Jordan are colleagues.", "Riley"), undefined);
+  assert.equal(expandLinkedAlias("Riley aka Jordan", "Jordan"), undefined);
+  assert.equal(expandLinkedAlias("Riley aka Jordan", undefined), undefined);
+  assert.equal(expandLinkedAlias(undefined, "Riley"), undefined);
 });
 
 test("entity evidence is case-insensitive and may be in the result path", () => {
-  assert.equal(hasEntityEvidence([{ text: "katja GRÜNWEDEL" }], "Katja Grünwedel"), true);
-  assert.equal(hasEntityEvidence([{ text: "unrelated", path: "memory/facts/Katja.md" }], "Katja"), true);
-  assert.equal(hasEntityEvidence([{ text: "unrelated" }], "Katja"), false);
-  assert.equal(hasEntityEvidence([{ text: "Katja" }], ""), false);
-  assert.equal(hasEntityEvidence([{ text: "Katja" }], undefined), false);
-  assert.equal(hasEntityEvidence(null, "Katja"), false);
-  assert.equal(hasEntityEvidence([{ text: null, path: 1, source: "memory/Katja" }], "Katja"), true);
+  assert.equal(hasEntityEvidence([{ text: "RILEY SAMPLE" }], "Riley Sample"), true);
+  assert.equal(hasEntityEvidence([{ text: "unrelated", path: "memory/facts/Riley.md" }], "Riley"), true);
+  assert.equal(hasEntityEvidence([{ text: "unrelated" }], "Riley"), false);
+  assert.equal(hasEntityEvidence([{ text: "Riley" }], ""), false);
+  assert.equal(hasEntityEvidence([{ text: "Riley" }], undefined), false);
+  assert.equal(hasEntityEvidence(null, "Riley"), false);
+  assert.equal(hasEntityEvidence([{ text: null, path: 1, source: "memory/Riley" }], "Riley"), true);
 });
 
 test("classifies file/path targets for direct document lookup without routing emails", () => {
   assert.equal(isDocumentIdentifier("memory/facts/person.md"), true);
   assert.equal(isDocumentIdentifier("report.pdf"), true);
-  assert.equal(isDocumentIdentifier("anna@example.org"), false);
-  assert.equal(isDocumentIdentifier("Katja Grünwedel"), false);
+  assert.equal(isDocumentIdentifier("person@example.test"), false);
+  assert.equal(isDocumentIdentifier("Riley Sample"), false);
   assert.equal(isDocumentIdentifier(undefined), false);
 });
 
