@@ -97,7 +97,7 @@ test("prompt hook makes one bounded exact-entity follow-up when baseline results
       ok: true,
       json: async () => ({
         results: [isTargeted
-          ? { ...result("Katja Grünwedel joined TomTom.", "memory"), path: "memory/katja.md", line: 9 }
+          ? { ...result("Riley Sample joined TomTom.", "memory"), path: "memory/riley.md", line: 9 }
           : result("General hiring context", "memory")],
         coverage: { main: "searched", archive: "searched", documents: "searched" },
       }),
@@ -106,12 +106,12 @@ test("prompt hook makes one bounded exact-entity follow-up when baseline results
   try {
     const instance = harness({ endpoint: "http://memory.test", turnReceipts: true, maxResults: 5 });
     const output = await instance.beforePrompt(
-      { prompt: 'What is known about "Katja Grünwedel"?' },
+      { prompt: 'What is known about "Riley Sample"?' },
       { agentId: "main" },
     );
     assert.equal(requests.length, 2);
-    assert.equal(requests[1], "Katja Grünwedel");
-    assert.match(output.prependContext, /Katja Grünwedel joined TomTom/);
+    assert.equal(requests[1], "Riley Sample");
+    assert.match(output.prependContext, /Riley Sample joined TomTom/);
     assert.match(instance.traces[0], /"status":"found"/);
   } finally {
     globalThis.fetch = previousFetch;
@@ -128,18 +128,18 @@ test("prompt hook folds a current-prompt alias pair into the same single follow-
       ok: true,
       json: async () => ({ results: [queries.length === 1
         ? result("General context")
-        : { ...result("Katja Ekaterina profile"), path: "memory/katja.md", line: 9 }] }),
+        : { ...result("Riley Jordan profile"), path: "memory/riley.md", line: 9 }] }),
     };
   };
   try {
     const instance = harness({ endpoint: "http://memory.test" });
     const output = await instance.beforePrompt(
-      { prompt: "Please check Katja aka Ekaterina." },
+      { prompt: "Please check Riley aka Jordan." },
       { agentId: "main" },
     );
     assert.equal(queries.length, 2);
-    assert.equal(queries[1], "Katja Ekaterina");
-    assert.match(output.prependContext, /Katja Ekaterina profile/);
+    assert.equal(queries[1], "Riley Jordan");
+    assert.match(output.prependContext, /Riley Jordan profile/);
   } finally {
     globalThis.fetch = previousFetch;
   }
@@ -152,17 +152,17 @@ test("prompt hook skips a targeted lookup when baseline results already contain 
     calls += 1;
     return {
       ok: true,
-      json: async () => ({ results: [result('Katja Grünwedel profile')] }),
+      json: async () => ({ results: [result('Riley Sample profile')] }),
     };
   };
   try {
     const instance = harness({ endpoint: "http://memory.test" });
     const output = await instance.beforePrompt(
-      { prompt: 'Tell me about "Katja Grünwedel".' },
+      { prompt: 'Tell me about "Riley Sample".' },
       { agentId: "main" },
     );
     assert.equal(calls, 1);
-    assert.match(output.prependContext, /Katja Grünwedel profile/);
+    assert.match(output.prependContext, /Riley Sample profile/);
   } finally {
     globalThis.fetch = previousFetch;
   }
@@ -179,7 +179,7 @@ test("prompt hook uses default target limits and discloses a failed follow-up in
   try {
     const instance = harness({ endpoint: "http://memory.test", timeoutMs: 1000 });
     const output = await instance.beforePrompt(
-      { prompt: 'Find "Katja Grünwedel".' },
+      { prompt: 'Find "Riley Sample".' },
       { agentId: "main" },
     );
     assert.equal(calls, 2);
@@ -200,18 +200,18 @@ test("prompt hook bounds successful follow-up results to the default limit", asy
       json: async () => ({
         results: calls === 1
           ? [result("General context")]
-          : [{ ...result("Katja Grünwedel fact"), path: "memory/katja.md", line: 9 }],
+          : [{ ...result("Riley Sample fact"), path: "memory/riley.md", line: 9 }],
       }),
     };
   };
   try {
     const instance = harness({ endpoint: "http://memory.test" });
     const output = await instance.beforePrompt(
-      { prompt: 'Find "Katja Grünwedel".' },
+      { prompt: 'Find "Riley Sample".' },
       { agentId: "main" },
     );
     assert.equal(calls, 2);
-    assert.match(output.prependContext, /Katja Grünwedel fact/);
+    assert.match(output.prependContext, /Riley Sample fact/);
   } finally {
     globalThis.fetch = previousFetch;
   }
@@ -228,7 +228,7 @@ test("prompt hook routes an explicit document path follow-up to the documents so
       json: async () => ({
         results: calls.length === 1
           ? [result("General context")]
-          : [{ ...result("Exact document match"), path: "memory/facts/sebastian.json", line: 3 }],
+          : [{ ...result("Exact document match"), path: "memory/facts/owner.json", line: 3 }],
         coverage: calls.length === 1
           ? { main: "searched", archive: "searched", documents: "searched" }
           : { main: "not_searched", archive: "not_searched", documents: "searched" },
@@ -238,12 +238,12 @@ test("prompt hook routes an explicit document path follow-up to the documents so
   try {
     const instance = harness({ endpoint: "http://memory.test", turnReceipts: true });
     const output = await instance.beforePrompt(
-      { prompt: "Check memory/facts/sebastian.json" },
+      { prompt: "Check memory/facts/owner.json" },
       { agentId: "main" },
     );
     assert.deepEqual(calls, [
-      { query: "Check memory/facts/sebastian.json", scope: "all" },
-      { query: "memory/facts/sebastian.json", scope: "documents" },
+      { query: "Check memory/facts/owner.json", scope: "all" },
+      { query: "memory/facts/owner.json", scope: "documents" },
     ]);
     assert.match(output.prependContext, /Exact document match/);
     assert.match(instance.traces[0], /"searched":\["main","archive","documents"\]/);
@@ -269,7 +269,7 @@ test("failed entity follow-up is disclosed and cannot become a verified absence"
   try {
     const instance = harness({ endpoint: "http://memory.test", turnReceipts: true });
     const output = await instance.beforePrompt(
-      { prompt: 'Find "Katja Grünwedel".' },
+      { prompt: 'Find "Riley Sample".' },
       { agentId: "main" },
     );
     assert.match(output.prependContext, /not every requested source was confirmed as searched|coverage is unverified/i);
