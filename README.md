@@ -56,6 +56,20 @@ surfaced alongside results. The tool response's `details.receipt` carries the
 schema-v2 status/source-coverage receipt for that explicit search; it contains
 no query or result text.
 
+### Low-confidence results
+
+When `/unified/search` returns `low_confidence: true` (no lexical match and only
+weak semantic similarity), the adapter keeps the results but adds a fixed,
+adapter-owned caution after them: in the prompt context (both legacy and
+receipt mode) and in the `unified_memory_search` tool text. The tool's
+`details.lowConfidence` and the receipt's additive `lowConfidence` boolean
+(also in the trace summary) mirror it. Only a literal boolean `true` counts, and
+the service's free-text `confidence_note` is deliberately dropped, never shown
+to the model. The flag never changes receipt `status`: a flagged result set stays
+`found`, and it is neither a verified absence nor a retrieval failure. It is
+ignored for zero-result and error receipts. After an entity follow-up merge the
+flag is kept only if both responses carried it.
+
 `deduplicateResults` is an optional, default-off provenance deduplication flag
 for both automatic and explicit searches. When enabled, repeated results with
 the same stable ID, or the same source/path/line tuple, collapse to the first

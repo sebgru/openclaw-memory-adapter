@@ -44,6 +44,7 @@ function buildReceipt({
   error = false,
   coverage,
   requireCoverage = false,
+  lowConfidence = false,
 }) {
   const requestedSources = sourcesForScope(scope);
   const boundedWarnings = boundedMessages(warnings, MAX_WARNINGS);
@@ -122,6 +123,9 @@ function buildReceipt({
     truncated: Boolean(truncated),
     partialCoverage,
     noContentIncluded,
+    // Additive, results-only signal: never changes `status` (a flagged
+    // result set is still "found", not an absence or a failure).
+    lowConfidence: !error && boundedResultCount > 0 && lowConfidence === true,
     timing: {
       startedAt,
       endedAt,
@@ -157,6 +161,12 @@ function formatReceiptNotice(receipt) {
   if (receipt.status === "found" && receipt.noContentIncluded) {
     parts.push(
       "Matches were found but none of the retrieved content could be attached to this turn (excluded by length limits or formatting); treat this turn as having no usable memory context.",
+    );
+  }
+
+  if (receipt.lowConfidence) {
+    parts.push(
+      "The memory service flagged these results as low confidence (no lexical match, weak semantic similarity): treat them as weak hints that are probably not relevant, not as facts. This is neither a verified absence nor a retrieval failure.",
     );
   }
 
@@ -196,6 +206,7 @@ function receiptTraceSummary(receipt) {
     includedCount: receipt.includedCount,
     truncated: receipt.truncated,
     partialCoverage: receipt.partialCoverage,
+    lowConfidence: receipt.lowConfidence,
     sources: receipt.sources,
     timing: receipt.timing,
   };

@@ -109,7 +109,16 @@ function normalizeResults(payload, maxResults, maxResultTextLength = DEFAULT_MAX
   const warnings = !Array.isArray(payload) ? boundMessages(payload?.warnings) : [];
   const conflicts = !Array.isArray(payload) ? boundMessages(payload?.conflicts) : [];
   const coverage = !Array.isArray(payload) ? normalizeCoverage(payload?.coverage) : undefined;
-  const extras = { warnings, conflicts, ...(coverage ? { coverage } : {}) };
+  // Only a literal boolean `true` counts. The service's free-text
+  // `confidence_note` is deliberately dropped: callers render fixed
+  // adapter-owned wording instead of untrusted service text.
+  const lowConfidence = !Array.isArray(payload) && payload?.low_confidence === true;
+  const extras = {
+    warnings,
+    conflicts,
+    ...(coverage ? { coverage } : {}),
+    ...(lowConfidence ? { lowConfidence: true } : {}),
+  };
   if (!Array.isArray(raw)) return { results: [], ...extras };
   const results = raw.slice(0, maxResults).flatMap((item) => {
     if (!item || typeof item !== "object") return [];
@@ -218,6 +227,9 @@ export function buildMemoryContextDetails(results, maxLength = DEFAULT_MAX_CONTE
   ].join("\n");
   return { text, truncated, includedCount: lines.length };
 }
+
+export const LOW_CONFIDENCE_NOTICE =
+  "Memory results for this turn were flagged low confidence by the memory service: no lexical match and only weak semantic similarity, so they are probably not relevant. Treat them as weak hints, do not present them as facts, and do not read them as a verified absence or a retrieval failure.";
 
 export function formatMemoryContext(results, maxLength = DEFAULT_MAX_CONTEXT_LENGTH) {
   return buildMemoryContextDetails(results, maxLength).text;

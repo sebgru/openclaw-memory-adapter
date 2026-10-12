@@ -247,6 +247,7 @@ test("receiptTraceSummary exposes turnId, schemaVersion, status, timing, and bou
     const summary = receiptTraceSummary(receipt);
     assert.deepEqual(Object.keys(summary).sort(), [
         "includedCount",
+        "lowConfidence",
         "partialCoverage",
         "resultCount",
         "schemaVersion",
