@@ -1,5 +1,5 @@
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
-import { buildMemoryContextDetails, formatMemoryContext, searchUnified } from "./src/client.js";
+import { LOW_CONFIDENCE_NOTICE, buildMemoryContextDetails, formatMemoryContext, searchUnified } from "./src/client.js";
 import { buildReceipt, formatReceiptNotice, receiptTraceSummary } from "./src/receipt.js";
 import { expandLinkedAlias, extractEntityTarget, hasEntityEvidence, isDocumentIdentifier, mergeSearchResponses } from "./src/entity-query.js";
 
@@ -113,7 +113,7 @@ export default definePluginEntry({
             }
           }
         }
-        const { results, warnings, conflicts, coverage } = retrieval;
+        const { results, warnings, conflicts, coverage, lowConfidence } = retrieval;
         if (warnings?.length) {
           api.logger.warn?.(`memory-adapter: service reported ${warnings.length} warning(s); details omitted`);
         }
@@ -123,7 +123,8 @@ export default definePluginEntry({
           const entityWarning = targetedSearchUnavailable
             ? "The targeted memory search for an explicitly named entity was unavailable; do not claim that entity was absent."
             : "";
-          const prependContext = [context, entityWarning].filter(Boolean).join("\n\n");
+          const lowConfidenceWarning = context && lowConfidence ? LOW_CONFIDENCE_NOTICE : "";
+          const prependContext = [context, lowConfidenceWarning, entityWarning].filter(Boolean).join("\n\n");
           return prependContext ? { prependContext } : undefined;
         }
         const { text: context, truncated, includedCount } = buildMemoryContextDetails(results, maxContextLength);
@@ -139,6 +140,7 @@ export default definePluginEntry({
           coverage,
           requireCoverage: config.requireServiceCoverage === true,
           truncated,
+          lowConfidence,
         });
         logReceiptTrace(api, receipt);
         const notice = formatReceiptNotice(receipt);
@@ -173,7 +175,7 @@ export default definePluginEntry({
         const turnId = (typeof _toolCallId === "string" && _toolCallId.slice(0, 128)) || globalThis.crypto.randomUUID();
         const startedAt = Date.now();
         try {
-          const { results, warnings, conflicts, coverage } = await searchUnified(params.query, { ...config, scope, profile: "tool", maxResults: params.maxResults ?? config.maxResults });
+          const { results, warnings, conflicts, coverage, lowConfidence } = await searchUnified(params.query, { ...config, scope, profile: "tool", maxResults: params.maxResults ?? config.maxResults });
           const { text: context, truncated, includedCount } = buildMemoryContextDetails(results);
           const receipt = buildReceipt({
             turnId,
@@ -187,19 +189,21 @@ export default definePluginEntry({
             coverage,
             requireCoverage: config.requireServiceCoverage === true,
             truncated,
+            lowConfidence,
           });
           const textParts = [];
           if (results.length === 0) {
             textParts.push("No memory results.");
           } else {
             textParts.push(context);
+            if (receipt.lowConfidence) textParts.push(LOW_CONFIDENCE_NOTICE);
           }
           if (warnings?.length) {
             textParts.push(`Warnings: ${warnings.slice(0, 3).join("; ")}`);
           }
           return {
             content: [{ type: "text", text: textParts.join("\n") }],
-            details: { scope, results, warnings, conflicts, receipt },
+            details: { scope, results, warnings, conflicts, lowConfidence: receipt.lowConfidence, receipt },
           };
         } catch (error) {
           const receipt = buildReceipt({ turnId, scope, startedAt, endedAt: Date.now(), error: true });

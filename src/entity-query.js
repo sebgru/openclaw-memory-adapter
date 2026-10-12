@@ -125,10 +125,14 @@ export function mergeSearchResponses(first, second, maxResults = 5) {
   const warnings = [...new Set([...(first.warnings ?? []), ...(second.warnings ?? [])])];
   const conflicts = [...new Set([...(first.conflicts ?? []), ...(second.conflicts ?? [])])];
   const coverage = mergeCoverage(first.coverage, second.coverage);
+  // Low confidence survives a merge only when both responses were flagged;
+  // a response without the flag may carry stronger evidence.
+  const lowConfidence = first.lowConfidence === true && second.lowConfidence === true;
   return {
     results,
     warnings,
     conflicts,
     ...(coverage === undefined ? {} : { coverage }),
+    ...(lowConfidence ? { lowConfidence: true } : {}),
   };
 }
