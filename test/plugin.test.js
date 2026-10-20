@@ -391,3 +391,100 @@ test("prompt hook receipt honors requireServiceCoverage with a zero-result respo
     globalThis.fetch = previousFetch;
   }
 });
+
+test("prompt hook never exceeds baseline plus one follow-up when the target stays missing", async () => {
+  const previousFetch = globalThis.fetch;
+  const queries = [];
+  globalThis.fetch = async (url) => {
+    queries.push(new URL(url).searchParams.get("q"));
+    return { ok: true, json: async () => ({ results: [result("Unrelated context")] }) };
+  };
+  try {
+    const instance = harness({ endpoint: "http://memory.test", turnReceipts: true });
+    await instance.beforePrompt({ prompt: 'Find "Riley Sample".' }, { agentId: "main" });
+    assert.deepEqual(queries, ['Find "Riley Sample".', "Riley Sample"]);
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+});
+
+test("prompt hook without an extractable entity issues exactly one request", async () => {
+  const previousFetch = globalThis.fetch;
+  const queries = [];
+  globalThis.fetch = async (url) => {
+    queries.push(new URL(url).searchParams.get("q"));
+    return { ok: true, json: async () => ({ results: [result()] }) };
+  };
+  try {
+    const instance = harness({ endpoint: "http://memory.test" });
+    // Assumes extractEntityTarget finds no quoted/path/named entity in this
+    // plain prompt, so no follow-up is eligible.
+    await instance.beforePrompt({ prompt: "what did we decide yesterday" }, { agentId: "main" });
+    assert.deepEqual(queries, ["what did we decide yesterday"]);
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+});
+
+test("search tool issues exactly one service request per invocation", async () => {
+  const previousFetch = globalThis.fetch;
+  const queries = [];
+  globalThis.fetch = async (url) => {
+    queries.push(new URL(url).searchParams.get("q"));
+    return { ok: true, json: async () => ({ results: [result("Unrelated")] }) };
+  };
+  try {
+    const instance = harness({ endpoint: "http://memory.test" });
+    await instance.tool.execute("cap-1", { query: "Riley Sample", scope: "all" });
+    assert.deepEqual(queries, ["Riley Sample"]);
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+});
+
+async function followUpCallsAfterBaselineTook(elapsedMs) {
+  const previousFetch = globalThis.fetch;
+  const previousNow = Date.now;
+  let now = 1_000_000;
+  const queries = [];
+  Date.now = () => now;
+  globalThis.fetch = async (url) => {
+    queries.push(new URL(url).searchParams.get("q"));
+    if (queries.length === 1) now += elapsedMs;
+    return { ok: true, json: async () => ({ results: [result("Unrelated context")] }) };
+  };
+  try {
+    const instance = harness({ endpoint: "http://memory.test" });
+    await instance.beforePrompt({ prompt: 'Find "Riley Sample".' }, { agentId: "main" });
+    return queries;
+  } finally {
+    globalThis.fetch = previousFetch;
+    Date.now = previousNow;
+  }
+}
+
+test("follow-up is skipped when under 250 ms of the six-second turn budget remains", async () => {
+  // 6000 - 5800 = 200 ms remaining, below the 250 ms floor.
+  assert.deepEqual(await followUpCallsAfterBaselineTook(5800), ['Find "Riley Sample".']);
+});
+
+test("follow-up still runs when exactly 250 ms of the turn budget remains", async () => {
+  // 6000 - 5750 = 250 ms remaining, which meets the floor.
+  assert.deepEqual(await followUpCallsAfterBaselineTook(5750), ['Find "Riley Sample".', "Riley Sample"]);
+});
+
+test("baseline evidence for the alias-expanded entity suppresses the follow-up", async () => {
+  const previousFetch = globalThis.fetch;
+  const queries = [];
+  globalThis.fetch = async (url) => {
+    queries.push(new URL(url).searchParams.get("q"));
+    return { ok: true, json: async () => ({ results: [result("Riley profile")] }) };
+  };
+  try {
+    const instance = harness({ endpoint: "http://memory.test" });
+    await instance.beforePrompt({ prompt: "Please check Riley aka Jordan." }, { agentId: "main" });
+    assert.deepEqual(queries, ["Please check Riley aka Jordan."]);
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+});
