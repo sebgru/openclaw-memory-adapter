@@ -441,3 +441,50 @@ test("search tool issues exactly one service request per invocation", async () =
     globalThis.fetch = previousFetch;
   }
 });
+
+async function followUpCallsAfterBaselineTook(elapsedMs) {
+  const previousFetch = globalThis.fetch;
+  const previousNow = Date.now;
+  let now = 1_000_000;
+  const queries = [];
+  Date.now = () => now;
+  globalThis.fetch = async (url) => {
+    queries.push(new URL(url).searchParams.get("q"));
+    if (queries.length === 1) now += elapsedMs;
+    return { ok: true, json: async () => ({ results: [result("Unrelated context")] }) };
+  };
+  try {
+    const instance = harness({ endpoint: "http://memory.test" });
+    await instance.beforePrompt({ prompt: 'Find "Riley Sample".' }, { agentId: "main" });
+    return queries;
+  } finally {
+    globalThis.fetch = previousFetch;
+    Date.now = previousNow;
+  }
+}
+
+test("follow-up is skipped when under 250 ms of the six-second turn budget remains", async () => {
+  // 6000 - 5800 = 200 ms remaining, below the 250 ms floor.
+  assert.deepEqual(await followUpCallsAfterBaselineTook(5800), ['Find "Riley Sample".']);
+});
+
+test("follow-up still runs when exactly 250 ms of the turn budget remains", async () => {
+  // 6000 - 5750 = 250 ms remaining, which meets the floor.
+  assert.deepEqual(await followUpCallsAfterBaselineTook(5750), ['Find "Riley Sample".', "Riley Sample"]);
+});
+
+test("baseline evidence for the alias-expanded entity suppresses the follow-up", async () => {
+  const previousFetch = globalThis.fetch;
+  const queries = [];
+  globalThis.fetch = async (url) => {
+    queries.push(new URL(url).searchParams.get("q"));
+    return { ok: true, json: async () => ({ results: [result("Riley profile")] }) };
+  };
+  try {
+    const instance = harness({ endpoint: "http://memory.test" });
+    await instance.beforePrompt({ prompt: "Please check Riley aka Jordan." }, { agentId: "main" });
+    assert.deepEqual(queries, ["Please check Riley aka Jordan."]);
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+});
