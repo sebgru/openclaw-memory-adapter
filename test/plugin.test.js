@@ -391,3 +391,52 @@ test("prompt hook receipt honors requireServiceCoverage with a zero-result respo
     globalThis.fetch = previousFetch;
   }
 });
+
+test("prompt hook never exceeds baseline plus one follow-up when the target stays missing", async () => {
+  const previousFetch = globalThis.fetch;
+  const queries = [];
+  globalThis.fetch = async (url) => {
+    queries.push(new URL(url).searchParams.get("q"));
+    return { ok: true, json: async () => ({ results: [result("Unrelated context")] }) };
+  };
+  try {
+    const instance = harness({ endpoint: "http://memory.test", turnReceipts: true });
+    await instance.beforePrompt({ prompt: 'Find "Riley Sample".' }, { agentId: "main" });
+    assert.equal(queries.length, 2);
+    assert.equal(queries[1], "Riley Sample");
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+});
+
+test("prompt hook without an extractable entity issues exactly one request", async () => {
+  const previousFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    return { ok: true, json: async () => ({ results: [result()] }) };
+  };
+  try {
+    const instance = harness({ endpoint: "http://memory.test" });
+    await instance.beforePrompt({ prompt: "what did we decide yesterday" }, { agentId: "main" });
+    assert.equal(calls, 1);
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+});
+
+test("search tool issues exactly one service request per invocation", async () => {
+  const previousFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    return { ok: true, json: async () => ({ results: [result("Unrelated")] }) };
+  };
+  try {
+    const instance = harness({ endpoint: "http://memory.test" });
+    await instance.tool.execute("cap-1", { query: 'Riley Sample', scope: "all" });
+    assert.equal(calls, 1);
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+});
