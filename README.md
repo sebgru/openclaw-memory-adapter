@@ -8,6 +8,9 @@ An external OpenClaw plugin that retrieves bounded memory context from an HTTP
 memory service. It is deliberately separate from OpenClaw's bundled memory
 indexer and never invokes indexing.
 
+What this plugin is for, and what every change must preserve, is defined in
+[Requirements](REQUIREMENTS.md).
+
 ## Behavior
 
 - Calls `GET {endpoint}/unified/search?q=...&scope=all&limit=5&profile=prompt`.
