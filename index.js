@@ -44,10 +44,20 @@ function logReceiptTrace(api, receipt) {
   api.logger?.debug?.(`memory-adapter: receipt ${JSON.stringify(receiptTraceSummary(receipt))}`);
 }
 
-export { eligible, listAllows };
+export { eligible, isInternalTurn, listAllows };
+
+const INTERNAL_TRIGGERS = new Set(["heartbeat", "cron", "memory"]);
+const INTERNAL_PROVENANCE_KINDS = new Set(["inter_session", "internal_system"]);
+
+// Fail open: a missing trigger or provenance is not proof of a non-human turn.
+function isInternalTurn(ctx) {
+  if (INTERNAL_TRIGGERS.has(ctx?.trigger)) return true;
+  return INTERNAL_PROVENANCE_KINDS.has(ctx?.inputProvenance?.kind);
+}
 
 function eligible(event, ctx, config) {
   if (config.enabled === false) return false;
+  if (isInternalTurn(ctx)) return false;
   if (!listAllows(config.agents, ctx.agentId)) return false;
   if (!listAllows(config.allowedChatTypes, ctx.chatType)) return false;
   if (!listAllows(config.allowedChatIds, ctx.chatId)) return false;

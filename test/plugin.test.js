@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import plugin, { eligible, listAllows } from "../index.js";
+import plugin, { eligible, isInternalTurn, listAllows } from "../index.js";
 
 function harness(config = {}) {
   let beforePrompt;
@@ -484,6 +484,47 @@ test("baseline evidence for the alias-expanded entity suppresses the follow-up",
     const instance = harness({ endpoint: "http://memory.test" });
     await instance.beforePrompt({ prompt: "Please check Riley aka Jordan." }, { agentId: "main" });
     assert.deepEqual(queries, ["Please check Riley aka Jordan."]);
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+});
+
+test("isInternalTurn flags heartbeat, cron, memory and non-human provenance only", () => {
+  for (const trigger of ["heartbeat", "cron", "memory"]) {
+    assert.equal(isInternalTurn({ agentId: "main", trigger }), true);
+  }
+  for (const kind of ["inter_session", "internal_system"]) {
+    assert.equal(isInternalTurn({ agentId: "main", trigger: "user", inputProvenance: { kind } }), true);
+  }
+  assert.equal(isInternalTurn({ agentId: "main", trigger: "user" }), false);
+  assert.equal(isInternalTurn({ agentId: "main", trigger: "user", inputProvenance: { kind: "external_user" } }), false);
+  assert.equal(isInternalTurn({ agentId: "main" }), false);
+  assert.equal(isInternalTurn(undefined), false);
+});
+
+test("prompt hook skips recall without any service call on internal turns but keeps user turns", async () => {
+  const previousFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    return { ok: true, json: async () => ({ results: [result()], warnings: [], conflicts: [] }) };
+  };
+  try {
+    const instance = harness({ endpoint: "http://memory.test" });
+    const internalCtxs = [
+      { agentId: "main", trigger: "heartbeat" },
+      { agentId: "main", trigger: "cron", jobId: "j1" },
+      { agentId: "main", trigger: "user", inputProvenance: { kind: "inter_session" } },
+    ];
+    for (const ctx of internalCtxs) {
+      assert.equal(await instance.beforePrompt({ prompt: "HEARTBEAT" }, ctx), undefined);
+    }
+    assert.equal(calls, 0);
+    assert.equal(eligible({ prompt: "q" }, { agentId: "main", trigger: "heartbeat" }, {}), false);
+    const output = await instance.beforePrompt({ prompt: "question" }, { agentId: "main", trigger: "user" });
+    assert.match(output.prependContext, /Remembered fact/);
+    assert.equal(calls, 1);
+    assert.equal(instance.warnings.length, 0);
   } finally {
     globalThis.fetch = previousFetch;
   }

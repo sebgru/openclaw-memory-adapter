@@ -24,6 +24,11 @@ What this plugin is for, and what every change must preserve, is defined in
   failure notice when the service is unavailable.
 - Uses a short timeout and fails closed when the service is unavailable.
 - Supports agent/chat allowlists.
+- Skips automatic recall on non-human turns: heartbeat, cron and memory-flush
+  triggers (`ctx.trigger`) and inter-session or internal-system input
+  (`ctx.inputProvenance.kind`). The explicit `unified_memory_search` tool stays
+  available on those turns. A turn with no trigger or provenance information
+  is treated as a normal turn.
 - The prompt hook uses `scope=all` with `profile=prompt`; the explicit tool
   uses `profile=tool` and supports scopes `all`, `main`, `archive`, and
   `documents`. It never calls `/index`.
