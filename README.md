@@ -29,6 +29,12 @@ What this plugin is for, and what every change must preserve, is defined in
   (`ctx.inputProvenance.kind`). The explicit `unified_memory_search` tool stays
   available on those turns. A turn with no trigger or provenance information
   is treated as a normal turn.
+- Detects topics (family, home, vehicle, finance, insurance, school or
+  childcare, work, health) in the prompt with a deterministic German/English/
+  Russian lexicon plus configured entity aliases. A triggered turn adds one
+  `scope=documents` lookup that runs in parallel with the baseline search and
+  reserves document slots in the injected context. See
+  [Topic-triggered document search](#topic-triggered-document-search).
 - The prompt hook uses `scope=all` with `profile=prompt`; the explicit tool
   uses `profile=tool` and supports scopes `all`, `main`, `archive`, and
   `documents`. It never calls `/index`.
@@ -111,6 +117,122 @@ The plugin is configured through OpenClaw's normal plugin configuration:
   }
 }
 ```
+
+## Topic-triggered document search
+
+Personal reference facts (address, children, school, bank, insurance, car,
+employer, health) live in the documents scope, where a broad `scope=all` search
+can rank them below sessions and notes. On an eligible human turn the adapter
+therefore checks the prompt against a topic lexicon, without any model call.
+When a topic matches:
+
+1. The baseline `scope=all` search starts as before.
+2. At the same time a second search with `scope=documents` and
+   `profile=prompt` starts, using the same query. The two run in parallel, so a
+   triggered turn takes as long as the slower of the two, never the sum.
+3. The results are merged: the relative order of retained baseline results is
+   preserved, results already present or repeated within the documents lane
+   are counted once, and up to `documentSlots` distinct documents (default 2;
+   baseline documents count first and are never evicted) are guaranteed in the
+   final `maxResults`. To make room, the lowest-ranked non-document baseline
+   entries may be replaced. The guarantee is bounded by `maxResults` and by
+   the number of distinct documents available. Free slots up to `maxResults`
+   are filled with further documents.
+
+Turns that do not match keep the existing single `scope=all` search. Internal
+turns (heartbeat, cron, memory flush, inter-session) and chats outside the
+configured allowlists never run either search.
+
+**Budget.** The documents lookup uses the adapter `timeoutMs` (or the lower
+`topicTrigger.timeoutMs`), capped at six seconds. It adds no wall-clock time
+beyond the baseline timeout and shares the existing six-second turn budget with
+the optional exact-entity follow-up, so a turn issues at most three requests:
+baseline, documents, and one entity follow-up. The adapter timeout is not
+raised.
+
+**Failure is soft and disclosed.** If the documents lookup fails or times out,
+the baseline context is still injected, with a fixed notice that the focused
+document search was unavailable and that absence must not be claimed. In
+receipt mode the receipt reports unverified coverage, so a zero-result turn is
+`unverified`, never a verified absence. A failure of the baseline search is
+handled as before (unavailable notice).
+
+**Category hint.** The backend's `/unified/search` has no category or document
+type parameter, so none is sent. The matched categories are used only to
+decide that the documents lookup is warranted.
+
+**Privacy.** Detection returns category names only. The debug log records a
+count and the outcome (`merged` or `unavailable`), never the prompt, the matched
+text, category names, or alias names.
+
+### Lexicon and matching
+
+The default lexicon (`src/topic-lexicon.js`) is generic: no personal names.
+It covers synonyms and inflected forms in German, English and Russian, for
+example school/`Schule`/`Grundschule`/`Kita`/`школа`/`детский сад`. Ambiguous
+everyday words ("work", "home", "job", "address", "analysis", "health check")
+are deliberately absent so ordinary technical turns do not trigger.
+
+Matching is lexical, so generic English words still cause false positives:
+"river bank" or "bank holiday" (finance), "Refactor the car class" (vehicle),
+"The mother board is dead" or "kids API endpoint rename" (family), and
+"Update the Chef cookbook" (work) all trigger. A false positive costs one extra
+parallel documents request and, if that request fails, the fixed
+"focused document search unavailable" notice. If a term is too noisy for your
+use, switch the whole category off with `disabledCategories`; the default
+lexicon itself cannot be edited through configuration.
+
+Matching is case-, diacritic- and umlaut-digraph-insensitive (`Kündigung`,
+`Kuendigung` and `kundigung` are equal; `Ё` equals `Е`) and whole-word. Term
+syntax, for `extraTerms` and `entityAliases`:
+
+| Term | Matches |
+|---|---|
+| `bank` | the word `bank` only |
+| `kind*` | words starting with `kind` (`kinder`, `kindern`) |
+| `*schule` | words ending in `schule` (`grundschule`) |
+| `*versicherung*` | words containing it (`autoversicherung`, `versicherungen`) |
+| `report card` | the phrase; any whitespace run matches |
+
+Terms are 2 to 64 characters, at most 200 per list and category.
+
+### Configuration
+
+```json
+{
+  "topicTrigger": {
+    "enabled": true,
+    "documentSlots": 2,
+    "timeoutMs": 1500,
+    "disabledCategories": ["vehicle"],
+    "extraTerms": {
+      "home": ["gartenhaus", "carport*"],
+      "pets": ["hamster*", "tierarzt*"]
+    },
+    "entityAliases": {
+      "family": ["Zed Example", "Zoë"],
+      "school": ["Example Grundschule", "Beispiel-Kita"],
+      "work": ["Example Corp"],
+      "vehicle": ["Samplemobil"]
+    }
+  }
+}
+```
+
+(Names above are invented examples.)
+
+| Key | Default | Meaning |
+|---|---|---|
+| `enabled` | `true` | Set `false` to disable topic detection and the documents lookup. |
+| `documentSlots` | `2` | Document results guaranteed in the merged result (1 to 10). |
+| `timeoutMs` | adapter `timeoutMs` | Optional timeout cap for the documents lookup (250 to 6000 ms); never above the adapter timeout. |
+| `disabledCategories` | `[]` | Default categories to switch off: `family`, `home`, `vehicle`, `finance`, `insurance`, `school`, `work`, `health`. |
+| `extraTerms` | `{}` | Extra terms per category; an unknown category name (lowercase letters, digits, `_`, `-`) creates a custom category. |
+| `entityAliases` | `{}` | Names and organisations per category (family members, school, employer). A name also matches its possessive (`Zoë's`, `Zoës`); use a wildcard such as `Зорвек*` for inflected names. |
+
+Entity aliases belong in plugin configuration only. Do not commit real names to
+this repository. A bare first name alias matches every whole-word occurrence of
+that name, so prefer full names when a first name is also a common word.
 
 ## Per-turn receipts (`turnReceipts`, default off)
 

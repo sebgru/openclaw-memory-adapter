@@ -1,9 +1,12 @@
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import { LOW_CONFIDENCE_NOTICE, buildMemoryContextDetails, formatMemoryContext, searchUnified } from "./src/client.js";
 import { buildReceipt, formatReceiptNotice, receiptTraceSummary } from "./src/receipt.js";
+import { detectTopics, mergeDocumentLane, topicTriggerSettings } from "./src/topic-trigger.js";
 import { expandLinkedAlias, extractEntityTarget, hasEntityEvidence, isDocumentIdentifier, mergeSearchResponses } from "./src/entity-query.js";
 
 const FAILURE_NOTICE = "Memory retrieval unavailable; do not assert facts from memory without verifying through another source.";
+const TOPIC_DOCUMENTS_NOTICE = "The focused document search for this turn's topic was unavailable; the general search still ran, so do not claim that no matching document exists.";
+const TOPIC_DOCUMENTS_WARNING = "topic documents search unavailable";
 const DEFAULT_TIMEOUT_MS = 1500;
 const MAX_TARGETED_SEARCH_MS = 6000;
 
@@ -78,6 +81,7 @@ export default definePluginEntry({
       const turnId = turnReceipts ? nextTurnId(event, ctx) : undefined;
       const startedAt = turnReceipts ? Date.now() : undefined;
       const retrievalStartedAt = Date.now();
+      const documentsAbort = new AbortController();
       try {
         const entityTarget = extractEntityTarget(event.prompt);
         const expandedQuery = expandLinkedAlias(event.prompt, entityTarget) ?? entityTarget;
@@ -86,14 +90,29 @@ export default definePluginEntry({
         const boundedTimeoutMs = entityTarget
           ? Math.min(configuredTimeoutMs, MAX_TARGETED_SEARCH_MS)
           : configuredTimeoutMs;
+        const topicSettings = topicTriggerSettings(config.topicTrigger);
+        const topics = topicSettings.enabled ? detectTopics(event.prompt, config.topicTrigger) : [];
+        // Runs in parallel with the baseline search, so it adds no wall-clock
+        // time beyond the baseline timeout, and never rejects: a failed
+        // documents lane degrades to a disclosed fallback.
+        const documentsLane = topics.length
+          ? searchUnified(event.prompt, {
+            ...config,
+            scope: "documents",
+            profile: "prompt",
+            timeoutMs: Math.min(topicSettings.timeoutMs ?? Infinity, configuredTimeoutMs, MAX_TARGETED_SEARCH_MS),
+          }, undefined, { signal: documentsAbort.signal }).then((response) => ({ response }), () => ({ failed: true }))
+          : undefined;
         let retrieval = await searchUnified(event.prompt, {
           ...config,
           scope,
           profile: "prompt",
           timeoutMs: boundedTimeoutMs,
         });
+        const documents = await documentsLane;
         let targetedSearchUnavailable = false;
-        if (entityTarget && !hasEntityEvidence(retrieval.results, entityTarget)) {
+        const evidenceResults = [...retrieval.results, ...(documents?.response?.results ?? [])];
+        if (entityTarget && !hasEntityEvidence(evidenceResults, entityTarget)) {
           const remainingMs = MAX_TARGETED_SEARCH_MS - (Date.now() - retrievalStartedAt);
           // Leave a small floor for the HTTP request itself; never start a
           // second request that would exceed this turn's six-second budget.
@@ -123,6 +142,29 @@ export default definePluginEntry({
             }
           }
         }
+        if (documents?.response) {
+          retrieval = mergeDocumentLane(
+            retrieval,
+            documents.response,
+            Number.isInteger(config.maxResults) ? config.maxResults : 5,
+            topicSettings.documentSlots,
+            (item) => hasEntityEvidence([item], entityTarget),
+          );
+        } else if (documents?.failed) {
+          // Coverage is dropped so receipts cannot report a verified absence
+          // while the focused documents lookup was unavailable.
+          retrieval = {
+            ...retrieval,
+            coverage: undefined,
+            warnings: [...new Set([...retrieval.warnings, TOPIC_DOCUMENTS_WARNING])],
+          };
+        }
+        if (documents) {
+          api.logger.debug?.(`memory-adapter: topic documents lane ${JSON.stringify({
+            topics: topics.length,
+            outcome: documents.failed ? "unavailable" : "merged",
+          })}`);
+        }
         const { results, warnings, conflicts, coverage, lowConfidence } = retrieval;
         if (warnings?.length) {
           api.logger.warn?.(`memory-adapter: service reported ${warnings.length} warning(s); details omitted`);
@@ -134,7 +176,8 @@ export default definePluginEntry({
             ? "The targeted memory search for an explicitly named entity was unavailable; do not claim that entity was absent."
             : "";
           const lowConfidenceWarning = context && lowConfidence ? LOW_CONFIDENCE_NOTICE : "";
-          const prependContext = [context, lowConfidenceWarning, entityWarning].filter(Boolean).join("\n\n");
+          const topicWarning = documents?.failed ? TOPIC_DOCUMENTS_NOTICE : "";
+          const prependContext = [context, lowConfidenceWarning, entityWarning, topicWarning].filter(Boolean).join("\n\n");
           return prependContext ? { prependContext } : undefined;
         }
         const { text: context, truncated, includedCount } = buildMemoryContextDetails(results, maxContextLength);
@@ -158,6 +201,7 @@ export default definePluginEntry({
         const prependContext = [hasUsableContext ? context : "", notice].filter(Boolean).join("\n\n");
         return { prependContext };
       } catch (error) {
+        documentsAbort.abort();
         api.logger.warn?.(`memory-adapter: retrieval failed: ${String(error)}`);
         if (!turnReceipts) {
           return { prependContext: FAILURE_NOTICE };
