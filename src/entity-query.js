@@ -109,6 +109,22 @@ function mergeCoverage(first, second) {
   return coverage;
 }
 
+/** Merge warnings, conflicts, coverage and low-confidence of two responses without overstating coverage. */
+export function mergeResponseMetadata(first, second) {
+  const warnings = [...new Set([...(first.warnings ?? []), ...(second.warnings ?? [])])];
+  const conflicts = [...new Set([...(first.conflicts ?? []), ...(second.conflicts ?? [])])];
+  const coverage = mergeCoverage(first.coverage, second.coverage);
+  // Low confidence survives a merge only when both responses were flagged;
+  // a response without the flag may carry stronger evidence.
+  const lowConfidence = first.lowConfidence === true && second.lowConfidence === true;
+  return {
+    warnings,
+    conflicts,
+    ...(coverage === undefined ? {} : { coverage }),
+    ...(lowConfidence ? { lowConfidence: true } : {}),
+  };
+}
+
 /** Merge two same-scope retrieval responses without overstating coverage. */
 export function mergeSearchResponses(first, second, maxResults = 5) {
   const seen = new Set();
@@ -122,17 +138,5 @@ export function mergeSearchResponses(first, second, maxResults = 5) {
     })
     .sort((a, b) => (Number(b.score) || 0) - (Number(a.score) || 0))
     .slice(0, maxResults);
-  const warnings = [...new Set([...(first.warnings ?? []), ...(second.warnings ?? [])])];
-  const conflicts = [...new Set([...(first.conflicts ?? []), ...(second.conflicts ?? [])])];
-  const coverage = mergeCoverage(first.coverage, second.coverage);
-  // Low confidence survives a merge only when both responses were flagged;
-  // a response without the flag may carry stronger evidence.
-  const lowConfidence = first.lowConfidence === true && second.lowConfidence === true;
-  return {
-    results,
-    warnings,
-    conflicts,
-    ...(coverage === undefined ? {} : { coverage }),
-    ...(lowConfidence ? { lowConfidence: true } : {}),
-  };
+  return { results, ...mergeResponseMetadata(first, second) };
 }

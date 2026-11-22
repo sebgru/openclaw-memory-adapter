@@ -167,17 +167,22 @@ export async function searchMemory(query, config, fetchImpl = globalThis.fetch) 
   return results;
 }
 
-export async function searchUnified(query, config, fetchImpl = globalThis.fetch) {
+export async function searchUnified(query, config, fetchImpl = globalThis.fetch, options = {}) {
   const normalized = normalizeConfig(config);
-  return searchService(query, normalized, fetchImpl, "/unified/search");
+  return searchService(query, normalized, fetchImpl, "/unified/search", options.signal);
 }
 
-async function searchService(query, config, fetchImpl, path) {
+async function searchService(query, config, fetchImpl, path, parentSignal) {
   const normalized = normalizeConfig(config);
   const boundedQuery = String(query ?? "").trim().slice(0, normalized.maxQueryLength);
   if (!boundedQuery) throw new Error("memory query must not be empty");
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), normalized.timeoutMs);
+  const abortFromParent = () => controller.abort();
+  if (parentSignal) {
+    if (parentSignal.aborted) controller.abort();
+    else parentSignal.addEventListener("abort", abortFromParent, { once: true });
+  }
   try {
     const params = new URLSearchParams({ q: boundedQuery, limit: String(normalized.maxResults) });
     if (normalized.scope) params.set("scope", normalized.scope);
@@ -191,6 +196,7 @@ async function searchService(query, config, fetchImpl, path) {
     return normalizeResults(await response.json(), normalized.maxResults, normalized.maxResultTextLength, normalized.deduplicateResults);
   } finally {
     clearTimeout(timer);
+    parentSignal?.removeEventListener("abort", abortFromParent);
   }
 }
 

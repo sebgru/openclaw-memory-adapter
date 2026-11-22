@@ -58,6 +58,31 @@ test("searchUnified accepts documents scope", async () => {
     assert.equal(request.url, "http://memory:8080/unified/search?q=where&limit=5&scope=documents");
 });
 
+test("searchUnified aborts the request when the parent signal aborts and cleans up its listener", async () => {
+  const parent = new AbortController();
+  let requestSignal;
+  const fetchImpl = (_url, init) => new Promise((_resolve, reject) => {
+    requestSignal = init.signal;
+    if (init.signal.aborted) reject(new Error("aborted"));
+    init.signal.addEventListener("abort", () => reject(new Error("aborted")));
+  });
+  const pending = searchUnified("where", { endpoint: "http://memory:8080", timeoutMs: 5000 }, fetchImpl, { signal: parent.signal });
+  parent.abort();
+  await assert.rejects(pending, /aborted/);
+  assert.equal(requestSignal.aborted, true);
+
+  await assert.rejects(
+    searchUnified("where", { endpoint: "http://memory:8080" }, fetchImpl, { signal: parent.signal }),
+    /aborted/,
+  );
+  assert.equal(requestSignal.aborted, true, "an already-aborted parent cancels before the request settles");
+
+  const fine = new AbortController();
+  const okFetch = async () => ({ ok: true, json: async () => ({ results: [] }) });
+  await searchUnified("where", { endpoint: "http://memory:8080" }, okFetch, { signal: fine.signal });
+  fine.abort();
+});
+
 test("searchService rejects empty queries", async () => {
     await assert.rejects(() => searchUnified("   ", { endpoint: "http://memory:8080" }, async () => ({})), /must not be empty/);
     await assert.rejects(() => searchUnified(null, { endpoint: "http://memory:8080" }, async () => ({})), /must not be empty/);
