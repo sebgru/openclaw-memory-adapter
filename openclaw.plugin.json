@@ -2,45 +2,184 @@
   "id": "memory-adapter",
   "name": "External Memory Adapter",
   "description": "Adds bounded external memory retrieval to eligible prompts.",
-  "activation": { "onStartup": true },
-  "contracts": { "tools": ["unified_memory_search"] },
+  "activation": {
+    "onStartup": true
+  },
+  "contracts": {
+    "tools": [
+      "unified_memory_search"
+    ]
+  },
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
     "properties": {
-      "endpoint": { "type": "string", "format": "uri-reference" },
-      "timeoutMs": { "type": "integer", "minimum": 250, "maximum": 10000 },
-      "maxResults": { "type": "integer", "minimum": 1, "maximum": 10 },
-      "scope": { "type": "string", "enum": ["all", "main", "archive", "documents"] },
-      "maxQueryLength": { "type": "integer", "minimum": 100, "maximum": 20000 },
-      "maxContextLength": { "type": "integer", "minimum": 1000, "maximum": 50000 },
-      "enabled": { "type": "boolean" },
-      "agents": { "type": "array", "items": { "type": "string" } },
-      "allowedChatTypes": { "type": "array", "items": { "type": "string" } },
-      "allowedChatIds": { "type": "array", "items": { "type": "string" } },
-      "turnReceipts": { "type": "boolean", "default": false },
-      "deduplicateResults": { "type": "boolean", "default": false },
-      "requireServiceCoverage": { "type": "boolean", "default": false },
+      "endpoint": {
+        "type": "string",
+        "format": "uri-reference"
+      },
+      "timeoutMs": {
+        "type": "integer",
+        "minimum": 250,
+        "maximum": 10000
+      },
+      "maxResults": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 10
+      },
+      "scope": {
+        "type": "string",
+        "enum": [
+          "all",
+          "main",
+          "archive",
+          "documents"
+        ]
+      },
+      "maxQueryLength": {
+        "type": "integer",
+        "minimum": 100,
+        "maximum": 20000
+      },
+      "maxContextLength": {
+        "type": "integer",
+        "minimum": 1000,
+        "maximum": 50000
+      },
+      "enabled": {
+        "type": "boolean"
+      },
+      "agents": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "allowedChatTypes": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "allowedChatIds": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "turnReceipts": {
+        "type": "boolean",
+        "default": false
+      },
+      "deduplicateResults": {
+        "type": "boolean",
+        "default": false
+      },
+      "requireServiceCoverage": {
+        "type": "boolean",
+        "default": false
+      },
       "topicTrigger": {
         "type": "object",
         "additionalProperties": false,
         "properties": {
-          "enabled": { "type": "boolean", "default": true },
-          "documentSlots": { "type": "integer", "minimum": 1, "maximum": 10, "default": 2 },
-          "timeoutMs": { "type": "integer", "minimum": 250, "maximum": 6000 },
-          "disabledCategories": { "type": "array", "maxItems": 32, "items": { "type": "string", "pattern": "^[a-z][a-z0-9_-]{0,31}$" } },
+          "enabled": {
+            "type": "boolean",
+            "default": true
+          },
+          "documentSlots": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10,
+            "default": 2
+          },
+          "timeoutMs": {
+            "type": "integer",
+            "minimum": 250,
+            "maximum": 6000
+          },
+          "disabledCategories": {
+            "type": "array",
+            "maxItems": 32,
+            "items": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]{0,31}$"
+            }
+          },
           "extraTerms": {
             "type": "object",
-            "propertyNames": { "pattern": "^[a-z][a-z0-9_-]{0,31}$" },
-            "additionalProperties": { "type": "array", "maxItems": 200, "items": { "type": "string", "minLength": 2, "maxLength": 64 } }
+            "propertyNames": {
+              "pattern": "^[a-z][a-z0-9_-]{0,31}$"
+            },
+            "additionalProperties": {
+              "type": "array",
+              "maxItems": 200,
+              "items": {
+                "type": "string",
+                "minLength": 2,
+                "maxLength": 64
+              }
+            }
           },
           "entityAliases": {
             "type": "object",
-            "propertyNames": { "pattern": "^[a-z][a-z0-9_-]{0,31}$" },
-            "additionalProperties": { "type": "array", "maxItems": 200, "items": { "type": "string", "minLength": 2, "maxLength": 64 } }
+            "propertyNames": {
+              "pattern": "^[a-z][a-z0-9_-]{0,31}$"
+            },
+            "additionalProperties": {
+              "type": "array",
+              "maxItems": 200,
+              "items": {
+                "type": "string",
+                "minLength": 2,
+                "maxLength": 64
+              }
+            }
+          }
+        }
+      },
+      "facts": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": false
+          },
+          "bearerToken": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "source": {
+                "const": "exec"
+              },
+              "provider": {
+                "const": "secretref"
+              },
+              "id": {
+                "const": "MEMORY_FACTS_WRITE_TOKEN"
+              }
+            },
+            "required": [
+              "source",
+              "provider",
+              "id"
+            ]
           }
         }
       }
+    }
+  },
+  "configContracts": {
+    "secretInputs": {
+      "paths": [
+        {
+          "path": "facts.bearerToken",
+          "expected": "string",
+          "ownerKind": "capability"
+        }
+      ]
     }
   }
 }

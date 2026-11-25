@@ -428,7 +428,7 @@ const CTX = { agentId: "a", chatType: "direct", chatId: "1" };
 
 test("plugin declares and registers unified_memory_search as a callable tool", () => {
     const handlers = setup(ENDPOINT);
-    assert.deepEqual(plugin.contracts.tools, ["unified_memory_search"]);
+    assert.deepEqual(plugin.contracts.tools, ["unified_memory_search", "memory_fact_draft"]);
     assert.equal(handlers.toolOptions.name, "unified_memory_search");
     assert.equal(handlers.tool.name, "unified_memory_search");
     assert.equal(typeof handlers.tool.execute, "function");

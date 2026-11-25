@@ -418,3 +418,103 @@ Tests use a local stub for `openclaw/plugin-sdk/plugin-entry` (see
 `test/stubs/`) so the plugin entry is importable and fully covered without a
 running OpenClaw Gateway. When the real `openclaw` peer package is present, it
 is used instead.
+
+## Opt-in owner-private fact drafts (D.3)
+
+**Off by default.** Requires memory backend v1.24.0 (authenticated fact routes)
+plus the OpenClaw hook/audience/prepared-secret contracts in COMPATIBILITY.md.
+This does not enable automatic profile injection, extraction, curated-file edits,
+or a second fact-search tool.
+
+Merge this fragment into the existing adapter entry (retain your existing
+endpoint, scopes, chat allowlists and other settings):
+
+```json
+{
+  "plugins": {
+    "entries": {
+      "memory-adapter": {
+        "enabled": true,
+        "config": {
+          "endpoint": "http://memory-sebg:8080",
+          "facts": {
+            "enabled": true,
+            "bearerToken": {
+              "source": "exec",
+              "provider": "secretref",
+              "id": "MEMORY_FACTS_WRITE_TOKEN"
+            }
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+The existing `secretref` provider must resolve the **same instance token** used by
+`memory-sebg`, not a new token. The manifest declares `facts.bearerToken` as a
+capability-owned SecretRef input. The SDK's `getPreparedPluginSecretInput` supplies
+only the startup-prepared secret in current plugin scope. Missing/unavailable
+secret fails closed; no environment fallback, plaintext config, cold resolver or
+credential logging is used. Requests reject redirects and credential-bearing URLs.
+
+### Chat protocol
+
+1. Authenticated owner privately starts a message with `remember this`, `merk dir`,
+   `запомни`, `correct this fact`, `end this fact`, `retract this fact`, or
+   `forget this` / `forget that` (`vergiss` / `забудь`). Quoted/retrieved phrases do
+   not trigger capture. The agent calls `memory_fact_draft` with a registry-linked
+   subject/predicate and exact value/type/unit/privacy/effective date. Unknown
+   dates stay null. The agent must semantically reject credentials and transient
+   health/dose state; conservative adapter screening and backend validation are
+   additional defenses, not general-purpose semantic secret detection. Custom,
+   derived and volatile predicates are unsupported. Weight stays in its canonical
+   food log; no duplicate generic weight capture is offered.
+2. The adapter creates `/facts/drafts`, fetches exact prior target values for
+   replace/end/retract, and returns one immutable private read-back. The agent
+   must send that text **exactly as the whole reply**, without wrapping or edits.
+   Only a successful `message_sent` with the complete exact text, provider message
+   ID and same canonical session binds it. Chunked, transformed, missing or
+   ambiguous delivery leaves no confirmable draft.
+3. The same authenticated owner directly replies `yes` / `ja` / `да` / `ok` / `👍`
+   to that exact delivered message before draft expiry (at most 24 hours).
+   The transport reply must itself be fresh (five minutes), same-session and
+   distinct from the original instruction. Only the trusted inbound hook calls
+   `/facts/confirm`; there is no model-callable confirmation tool. Generic yes,
+   forwarded/quoted/edited replies, wrong users, group/unknown audiences and
+   replays cannot confirm. No/edit/unrelated turns invalidate the mapping; editing
+   needs a new explicit instruction and read-back. One draft per instruction;
+   batches/implicit proactive capture are intentionally unsupported.
+4. End/retract/forget use the same draft/confirmation path, never a lifecycle
+   shortcut. `forget` maps to backend `retract`. Successful retraction clears all
+   pending in-process read-backs; recall has no fact cache. Session lifecycle/reset
+   clears pending state and restart loses it. Already delivered chat/tool history,
+   external caches, backups and source copies require their own retention policy;
+   store purge does not promise their erasure. Curated-file edits are separate
+   reviewed diffs. On failed/ambiguous confirmation, do not retry automatically:
+   request a fresh draft/read-back and verify backend state.
+
+### Explicit current-fact recall
+
+Use the existing `unified_memory_search` with `query`, `fact_subject` and
+`fact_predicate`. The adapter checks trusted owner-private tool audience **and**
+current inbound identity before sending bearer auth and structured parameters.
+`current_state` is rendered ahead of evidence, preserving source/date/rank,
+alternatives/history and stale/conflict/unreviewed/mail-only/unknown/derived
+labels. T0 means agent-asserted owner provenance, not curated-file verification.
+Missing/failed fact lane is **unavailable**, never an empty verified absence.
+Restricted records are recursively withheld unless `include_restricted: true`
+and the actual owner's current instruction explicitly requests `restricted` facts.
+Automatic recall does not request the fact lane. Ordinary legacy search behavior
+is unchanged; this feature is not a full bootstrap/fork privacy retrofit.
+
+### Later operator enablement
+
+Review/merge PR, release a new minor adapter version, install that pinned release,
+merge the SecretRef configuration above, and use the separately approved Gateway
+restart procedure. Then test real private delivery/reply binding on each intended
+channel before the first real save. Confirm persistence/read-back and a private
+forget flow; group/unknown/wrong-user probes must not issue fact requests. Do not
+seed synthetic production facts. This implementation task does not install,
+reload, restart, change configuration, or write live facts.
