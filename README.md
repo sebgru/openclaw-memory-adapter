@@ -464,7 +464,12 @@ credential logging is used. Requests reject redirects and credential-bearing URL
 1. Authenticated owner privately starts a message with `remember this`, `merk dir`,
    `запомни`, `correct this fact`, `end this fact`, `retract this fact`, or
    `forget this` / `forget that` (`vergiss` / `забудь`). Quoted/retrieved phrases do
-   not trigger capture. The agent calls `memory_fact_draft` with a registry-linked
+   not trigger capture. A trusted host `ctx.messageProvenance: "direct"` is
+   mandatory for capture, confirmation and fact recall. Missing/forwarded/unknown
+   provenance fails closed. The currently inspected native host does not expose
+   this contract: **capture remains unavailable on it**, even with the flag on.
+   This field is a required future host contract, not a model/config override.
+   The agent calls `memory_fact_draft` with a registry-linked
    subject/predicate and exact value/type/unit/privacy/effective date. Unknown
    dates stay null. The agent must semantically reject credentials and transient
    health/dose state; conservative adapter screening and backend validation are
@@ -488,7 +493,7 @@ credential logging is used. Requests reject redirects and credential-bearing URL
    batches/implicit proactive capture are intentionally unsupported.
 4. End/retract/forget use the same draft/confirmation path, never a lifecycle
    shortcut. `forget` maps to backend `retract`. Successful retraction clears all
-   pending in-process read-backs; recall has no fact cache. Session lifecycle/reset
+   pending in-process read-backs and in-flight session authority; recall has no fact cache. Session lifecycle/reset
    clears pending state and restart loses it. Already delivered chat/tool history,
    external caches, backups and source copies require their own retention policy;
    store purge does not promise their erasure. Curated-file edits are separate
@@ -505,7 +510,10 @@ alternatives/history and stale/conflict/unreviewed/mail-only/unknown/derived
 labels. T0 means agent-asserted owner provenance, not curated-file verification.
 Missing/failed fact lane is **unavailable**, never an empty verified absence.
 Restricted records are recursively withheld unless `include_restricted: true`
-and the actual owner's current instruction explicitly requests `restricted` facts.
+and the actual owner sends the standalone command **Show restricted facts**
+(case-insensitive, optional terminal `.` or `!`). Negated, quoted, extended or
+ambiguous mentions do not authorize disclosure. Derived restricted values and
+source identifiers are withheld with their enclosing result.
 Automatic recall does not request the fact lane. Ordinary legacy search behavior
 is unchanged; this feature is not a full bootstrap/fork privacy retrofit.
 

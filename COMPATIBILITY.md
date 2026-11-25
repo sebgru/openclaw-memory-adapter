@@ -23,6 +23,12 @@ Legacy retrieval remains compatible with the prior plugin entry API. Enabling
 - `inbound_claim`: host `senderIsOwner`, explicit `isGroup: false`, millisecond
   provider timestamp, canonical `ctx.sessionKey`, `ctx.senderId`, `ctx.messageId`,
   native `ctx.replyToId`; edits/quoted replies must be signalled.
+  **Additionally required, not provided by the inspected native host:** trusted
+  `ctx.messageProvenance: "direct"`, attesting original nonforwarded input.
+  Missing/unknown/forwarded provenance fails closed on capture, confirmation and
+  fact recall. This is a future host contract requirement, not a claim of current
+  native support or a user/model-settable option. Merely enabling the flag on
+  the inspected host cannot enable capture.
 - `message_sent`: successful delivery with canonical session, complete exact
   content and actual provider message ID. Missing WebChat/channel delivery
   support is fail-closed, **not** a simulated successful binding.
@@ -31,7 +37,9 @@ Legacy retrieval remains compatible with the prior plugin entry API. Enabling
 - `session_start`, `session_end`, `before_reset` invalidate pending mappings.
 - Public SDK `openclaw/plugin-sdk/secret-input-runtime` export
   `getPreparedPluginSecretInput`, plus manifest `configContracts.secretInputs`
-  startup materialization and capability-owned fail-cold isolation. Source config
+  startup materialization and capability-owned fail-cold isolation.
+- Manifest `contracts.tools` must declare both `unified_memory_search` and
+  `memory_fact_draft`; entry-definition properties are not manifest authority. Source config
   must accept the SecretRef schema while runtime values are resolved strings.
 
 These interfaces were inspected in the locally available OpenClaw 2026.11.4 SDK,

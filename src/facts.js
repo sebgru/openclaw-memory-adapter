@@ -30,7 +30,7 @@ export function renderCurrentState(block, restricted = false) {
   if (!Array.isArray(block) || !block.length) return UNAVAILABLE;
   const redact = (value) => {
     if (!value || typeof value !== "object") return value;
-    if (value.privacy_class === "restricted" && !restricted) return { withheld: "restricted; explicit owner request required" };
+    if ((value.privacy_class === "restricted" || value.derived_privacy_class === "restricted") && !restricted) return { withheld: "restricted; explicit owner request required" };
     if (Array.isArray(value)) return value.map(redact);
     return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, redact(item)]));
   };
@@ -78,7 +78,7 @@ export function createFacts(api, config) {
       prune();
       const key = ctx.sessionKey;
       if (!key || event.senderIsOwner !== true || event.isGroup !== false ||
-          !ctx.senderId || !ctx.messageId || !Number.isFinite(event.timestamp) ||
+          !ctx.senderId || !ctx.messageId || ctx.messageProvenance !== "direct" || !Number.isFinite(event.timestamp) ||
           event.providerUpdate?.editedTimestamp || event.replyToIsQuote === true) {
         if (key) { pending.delete(key); sessions.delete(key); notices.delete(key); }
         return;
@@ -101,7 +101,7 @@ export function createFacts(api, config) {
         guard();
         if (result.draft_id !== draft.id || result.action !== draft.action) throw new Error("invalid confirmation result");
         // No recall cache exists. Forget invalidates all pending same-instance views.
-        if (draft.action === "retract") { pending.clear(); notices.clear(); }
+        if (draft.action === "retract") { pending.clear(); sessions.clear(); notices.clear(); }
         notices.set(key, "Fact operation committed: " + draft.action + ". Curated files unchanged. Forget does not erase backups or prior chat copies.");
       } catch {
         notices.set(key, UNAVAILABLE + " Do not retry this confirmation.");
@@ -153,7 +153,7 @@ export function createFacts(api, config) {
           }
           guard();
           const readback = "Save this private fact change?\n" + JSON.stringify({
-            action: draft.action, subject: draft.subject, predicate: draft.predicate, value: draft.value, unit: draft.unit,
+            action: draft.action, subject: draft.subject, predicate: draft.predicate, value: draft.value, value_type: draft.value_type, unit: draft.unit,
             privacy_class: draft.privacy_class, valid_from: draft.valid_from, valid_to: draft.valid_to ?? null, item_key: draft.item_key ?? null, targets,
           }) + "\nReply directly to this message with yes / ja / да / ok / 👍 before " + draft.expires_at +
             ". No/edit saves nothing; an edit requires a new draft. Curated files need a separate reviewed diff. Forget purges the store value, not backups or chat copies.";
@@ -179,7 +179,7 @@ export function createFacts(api, config) {
         guard();
         const normalized = normalizeResults(response, params.maxResults ?? 5);
         return { content: [{ type: "text", text: renderCurrentState(response.current_state,
-          params.include_restricted === true && /\brestricted\b/iu.test(turn.content)) + "\n" + formatMemoryContext(normalized.results) }] };
+          params.include_restricted === true && /^show restricted facts[.!]?$/iu.test(turn.content.trim())) + "\n" + formatMemoryContext(normalized.results) }] };
       } catch {
         return { content: [{ type: "text", text: UNAVAILABLE }] };
       }

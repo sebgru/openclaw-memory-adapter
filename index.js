@@ -75,7 +75,6 @@ export default definePluginEntry({
   id: "memory-adapter",
   name: "External Memory Adapter",
   description: "Adds bounded external memory retrieval without invoking indexing.",
-  contracts: { tools: ["unified_memory_search", "memory_fact_draft"] },
   register(api) {
     const config = api.pluginConfig ?? {};
     const facts = createFacts(api, config);

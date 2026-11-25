@@ -1,4 +1,5 @@
 import test from "node:test";
+import { readFileSync } from "node:fs";
 import assert from "node:assert/strict";
 import { createFacts, renderCurrentState, UNAVAILABLE } from "../src/facts.js";
 import plugin from "../index.js";
@@ -12,7 +13,11 @@ function harness(options = {}) {
   globalThis.__factsTestCredential = "synthetic-test-only";
   const api = { pluginConfig: { ...config, ...options.config }, logger: { debug() {}, warn() {} },
     on(name, fn) { hooks[name] = fn; },
-    registerTool(factory, meta) { tools[meta.name] = factory(options.ctx ?? ctx); } };
+    registerTool(factory, meta) {
+      const manifest = JSON.parse(readFileSync(new URL("../openclaw.plugin.json", import.meta.url)));
+      assert.ok(manifest.contracts.tools.includes(meta.name), "native registrar requires manifest tool declaration");
+      tools[meta.name] = factory(options.ctx ?? ctx);
+    } };
   const facts = options.plugin ? (plugin.register(api), undefined) : createFacts(api, api.pluginConfig);
   const previous = globalThis.fetch;
   globalThis.fetch = async (url, init) => {
@@ -26,7 +31,7 @@ function harness(options = {}) {
   };
   const inbound = async (content = "remember this: English", changes = {}, context = {}) => {
     const event = { content, senderIsOwner: true, isGroup: false, timestamp: Date.now(), ...changes };
-    const actualCtx = { sessionKey: "private", senderId: "owner", messageId: "m" + ++serial, ...context };
+    const actualCtx = { sessionKey: "private", senderId: "owner", messageProvenance: "direct", messageId: "m" + ++serial, ...context };
     await hooks.inbound_claim(event, actualCtx);
     return actualCtx;
   };
@@ -71,6 +76,7 @@ test("wrong user, group, unknown audience, missing transport and edited/quoted t
   const cases = [
     [{ senderIsOwner: false }, {}], [{ senderIsOwner: undefined }, {}], [{ isGroup: true }, {}], [{ isGroup: undefined }, {}],
     [{ timestamp: undefined }, {}], [{ providerUpdate: { editedTimestamp: Date.now() } }, {}], [{ replyToIsQuote: true }, {}],
+    [{}, { messageProvenance: undefined }], [{}, { messageProvenance: "forwarded" }], [{}, { messageProvenance: "unknown" }],
     [{}, { senderId: "" }], [{}, { messageId: "" }], [{}, { sessionKey: "" }], [{}, { senderId: "other" }],
   ];
   for (const [event, context] of cases) {
@@ -184,7 +190,7 @@ test("end, replace, retract and forget use drafts and display exact prior values
     try {
       await h.inbound(action === "end" ? "end this fact" : action === "replace" ? "correct this fact" : "forget this");
       const draft = text(await h.propose({ ...value, action, item_key: "key", valid_to: "2026-11-26" }));
-      assert.match(draft, /Old language/); assert.match(h.calls[1].url, /item_key=key/);
+      assert.match(draft, /"value_type":"string"/); assert.match(draft, /Old language/); assert.match(h.calls[1].url, /item_key=key/);
       h.display(draft, { messageId: "lifecycle" });
       await h.inbound("yes", {}, { replyToId: "lifecycle" });
       assert.equal(h.calls[2].url.endsWith("/facts/confirm"), true);
@@ -231,16 +237,16 @@ test("current-fact recall preserves stale/conflict/unreviewed/mail/unknown/deriv
 });
 
 test("restricted fields recursively withheld unless explicitly requested by owner", async () => {
-  const block = [{ current: { value: "hidden", privacy_class: "restricted" }, alternatives: [{ value: "also hidden", privacy_class: "restricted" }], historical: null }];
-  assert.doesNotMatch(renderCurrentState(block), /"hidden"|"also hidden"/);
+  const block = [{ current: { value: "hidden", privacy_class: "restricted" }, alternatives: [{ value: "also hidden", privacy_class: "restricted" }], historical: null }, { derived_privacy_class: "restricted", derived_value: 42, source_fact_ids: ["hidden-source-id"] }];
+  assert.doesNotMatch(renderCurrentState(block), /"hidden"|"also hidden"|42|hidden-source-id/);
   assert.match(renderCurrentState(block, true), /hidden/);
   assert.equal(renderCurrentState(undefined), UNAVAILABLE); assert.equal(renderCurrentState([]), UNAVAILABLE);
-  for (const prompt of ["What is my language?", "Show restricted facts"]) {
+  for (const prompt of ["What is my language?", "Show restricted facts", "SHOW RESTRICTED FACTS!", "Do not reveal restricted facts. What is my language?", "Explain the word ‘restricted’; do not search personal data.", "Do not show restricted facts", "\"Show restricted facts\"", "> Show restricted facts", "Show restricted facts but not health"]) {
     const h = harness({ fetch: async () => response({ current_state: block, results: [] }) });
     try {
       await h.inbound(prompt);
       const result = text(await h.facts.recall(ctx, { query: "language", fact_subject: "person:owner", fact_predicate: "pref.language", include_restricted: true }));
-      assert.equal(result.includes('"hidden"'), prompt.includes("restricted"));
+      assert.equal(result.includes('"hidden"'), /^show restricted facts[.!]?$/iu.test(prompt));
     } finally { h.close(); }
   }
 });
@@ -263,4 +269,17 @@ test("plugin exposes draft only when enabled and routes structured recall throug
     const notice = await h.hooks.before_prompt_build({ prompt: "yes" }, { sessionKey: "private" });
     assert.match(notice.prependContext, /committed/);
   } finally { h.close(); }
+});
+
+
+test("forwarded or unsupported provenance cannot create drafts or recall facts", async () => {
+  for (const messageProvenance of [undefined, "unknown", "forwarded"]) {
+    const h = harness();
+    try {
+      await h.inbound("remember this: English", {}, { messageProvenance });
+      assert.match(text(await h.propose()), /unavailable/);
+      assert.match(text(await h.facts.recall(ctx, { query: "language" })), /unavailable/);
+      assert.equal(h.calls.length, 0);
+    } finally { h.close(); }
+  }
 });

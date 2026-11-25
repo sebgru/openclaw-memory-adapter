@@ -16,7 +16,7 @@ function fixture(config = {}) {
     return { ok: true, json: async () => url.includes("/facts/drafts") ?
       { ...body, draft_id: "d_one", expires_at: new Date(Date.now() + 86400000).toISOString() } : { draft_id: "d_one", action: "add" } };
   };
-  const inbound = (content, event = {}, context = {}) => hooks.inbound_claim({ content, senderIsOwner: true, isGroup: false, timestamp: Date.now(), ...event }, { ...ctx, senderId: "owner", messageId: content === "yes" ? "confirm" : "proposal", ...context });
+  const inbound = (content, event = {}, context = {}) => hooks.inbound_claim({ content, senderIsOwner: true, isGroup: false, timestamp: Date.now(), ...event }, { ...ctx, senderId: "owner", messageProvenance: "direct", messageId: content === "yes" ? "confirm" : "proposal", ...context });
   const ready = async () => {
     await inbound("remember this: English");
     const result = await factories.memory_fact_draft(ctx).execute("call", params);
@@ -112,5 +112,36 @@ test("capture revocation during request cannot install pending readback", async 
       return { ok: true, json: async () => ({ ...JSON.parse(init.body), draft_id: "d", expires_at: new Date(Date.now() + 1000).toISOString() }) };
     };
     assert.match((await h.factories.memory_fact_draft(ctx).execute("call", params)).content[0].text, /unavailable/);
+  } finally { h.close(); }
+});
+
+
+test("forget revokes held draft responses in other sessions before they can bind or confirm", async () => {
+  const h = fixture();
+  try {
+    let release;
+    const held = new Promise((resolve) => { release = resolve; });
+    globalThis.fetch = async (url, init) => {
+      h.calls.push(url);
+      const body = JSON.parse(init.body);
+      if (url.includes("/facts/drafts") && body.action === "add") await held;
+      return { ok: true, json: async () => url.includes("/facts/drafts") ?
+        { ...body, draft_id: body.action, expires_at: new Date(Date.now() + 60000).toISOString() } :
+        { draft_id: "retract", action: "retract" } };
+    };
+    await h.inbound("remember this: English");
+    const old = h.factories.memory_fact_draft(ctx).execute("old", params);
+    const other = { ...ctx, sessionKey: "forget-session" };
+    await h.inbound("forget this", {}, { sessionKey: other.sessionKey });
+    const forget = await h.factories.memory_fact_draft(other).execute("forget", { ...params, action: "forget" });
+    h.hooks.message_sent({ success: true, messageId: "forget-shown", content: forget.content[0].text }, other);
+    await h.inbound("yes", {}, { sessionKey: other.sessionKey, replyToId: "forget-shown" });
+    assert.match(h.facts.takeNotice(other), /committed: retract/);
+    release();
+    const result = await old;
+    assert.match(result.content[0].text, /unavailable/);
+    h.hooks.message_sent({ success: true, messageId: "old-shown", content: result.content[0].text }, ctx);
+    await h.inbound("yes", {}, { replyToId: "old-shown" });
+    assert.equal(h.calls.filter((url) => url.endsWith("/facts/confirm")).length, 1);
   } finally { h.close(); }
 });
