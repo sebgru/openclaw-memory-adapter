@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createFacts } from "../src/facts.js";
 
-const ctx = { sessionKey: "agent:main:dashboard:private", requesterProfileId: "profile", messageChannel: "webchat", sessionId: "one", senderIsOwner: true, requesterSenderId: "owner", memoryAudience: { kind: "owner-private" } };
+const ctx = { sessionKey: "agent:main:dashboard:private", requesterProfileId: "profile", messageChannel: "webchat", chatType: "direct", trigger: "user", inputProvenance: { kind: "external_user" }, sessionId: "one", senderIsOwner: true, requesterSenderId: "owner", memoryAudience: { kind: "owner-private" } };
 const params = { action: "add", subject: "person:owner", predicate: "pref.language", value: "English", value_type: "string", unit: null, valid_from: null, privacy_class: "shareable" };
 function fixture(config = {}) {
   const hooks = {}, factories = {}, calls = [];

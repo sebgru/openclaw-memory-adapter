@@ -38,15 +38,21 @@ export function createFacts(api, config) {
   const pending = new Map();
   let generation = 0;
   const enabled = config.enabled !== false && config.facts?.enabled === true;
-  // The local host binds requesterProfileId only to authenticated, nonsynthetic
-  // browser ingress. The audience alone is inherited by delegated runs.
+  // All authorization fields are host tool-factory context, never tool arguments.
+  // chatType/trigger/inputProvenance are required contracts: installed hosts that
+  // do not project them cannot enable writes, even if private reads are allowed.
   const authorized = (ctx) => enabled && ctx.senderIsOwner === true &&
-    ctx.memoryAudience?.kind === "owner-private" &&
+    ctx.memoryAudience?.kind === "owner-private" && ctx.chatType === "direct" &&
+    ctx.trigger === "user" && ctx.inputProvenance?.kind === "external_user" &&
+    ctx.inputProvenance.sourceRole === undefined &&
+    ctx.oneShotCliRun !== true && !ctx.memoryFlush &&
     typeof ctx.sessionId === "string" && !!ctx.sessionId &&
     typeof ctx.requesterSenderId === "string" && !!ctx.requesterSenderId &&
-    typeof ctx.requesterProfileId === "string" && !!ctx.requesterProfileId &&
-    typeof ctx.sessionKey === "string" && /^agent:[^:]+:(?:main|dashboard:[^:]+)$/u.test(ctx.sessionKey) &&
-    ctx.messageChannel === "webchat" && ctx.messageProvenance !== "forwarded";
+    typeof ctx.sessionKey === "string" &&
+    /^agent:[^:]+:(?:main|dashboard:[^:]+|direct:[^:]+|(?:webchat|telegram):(?:[^:]+:)?direct:[^:]+)$/u.test(ctx.sessionKey) &&
+    ["webchat", "telegram"].includes(ctx.messageChannel) &&
+    ctx.messageProvenance !== "forwarded" &&
+    !Object.keys(ctx).some((key) => (key === "forward_origin" || key === "forwarded" || /^(?:Forwarded|ReplyToForwarded)/u.test(key)) && ctx[key] !== undefined);
   function guard(ctx) {
     ctx.assertInvocationCurrent?.();
     ctx.assertMemoryAudienceCurrent?.();
@@ -71,7 +77,7 @@ export function createFacts(api, config) {
   }
   const reply = (text) => ({ content: [{ type: "text", text }] });
   const bound = (draft, ctx) => draft.session === ctx.sessionKey && draft.incarnation === ctx.sessionId &&
-    draft.sender === ctx.requesterSenderId && draft.profile === ctx.requesterProfileId;
+    draft.sender === ctx.requesterSenderId;
   function prune() {
     for (const [id, draft] of pending) if (draft.expires <= Date.now()) pending.delete(id);
   }
@@ -124,7 +130,7 @@ export function createFacts(api, config) {
             valid_from: draft.valid_from, valid_to: draft.valid_to ?? null, item_key: draft.item_key ?? null, targets,
           }) + " Reply yes to confirm within five minutes. Curated files unchanged; forget does not erase backups or chat copies.";
           pending.set(draft.draft_id, { action: draft.action, session: ctx.sessionKey, incarnation: ctx.sessionId,
-            sender: ctx.requesterSenderId, profile: ctx.requesterProfileId,
+            sender: ctx.requesterSenderId, profile: ctx.requesterProfileId, // Optional metadata, not authority or binding.
             expires: Math.min(Date.parse(draft.expires_at), Date.now() + 300000) });
           return reply(readback);
         } catch {

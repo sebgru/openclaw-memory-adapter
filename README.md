@@ -470,7 +470,7 @@ credential logging is used. Requests reject redirects and credential-bearing URL
    `memory_fact_confirm` with that exact draft id. Do not confirm your own suggestion,
    quoted/forwarded text, silence or ambiguous replies. No/edit means no confirmation;
    an edit requires a new proposal. The adapter binds the id to host session,
-   incarnation, sender and requester profile, with a TTL of at most **five minutes**
+   incarnation and sender (requester profile is optional metadata), with a TTL of at most **five minutes**
    (or the backend's earlier expiry). Foreign, replayed or expired drafts are denied.
    Consumption happens before network I/O: an uncertain result must not be retried;
    check backend state and propose anew.
@@ -480,27 +480,35 @@ credential logging is used. Requests reject redirects and credential-bearing URL
    volatile state. Curated-file mirrors require separate reviewed diffs. Forget
    purges the store value, not prior chats/tool histories, external caches or backups.
 
-**Authorization and channel scope:** both tools require host `senderIsOwner === true`,
-prepared `memoryAudience.kind === "owner-private"`, nonempty `sessionId`,
-`requesterSenderId` and **host-projected `requesterProfileId`**, an ordinary
-`agent:<agent>:main` or `agent:<agent>:dashboard:<id>` session key, and
-`messageChannel === "webchat"`. Other session kinds, groups, subagents and
-missing-profile synthetic cron/heartbeat/inter-session runs fail closed. Never
-supply these fields via tool parameters, config, prompt JSON or session lookups.
-The current local host's requester-profile patch produces this profile only for
-live authenticated nonsynthetic browser ingress. It is not an upstream promise.
-Telegram does not project that profile today and is **unsupported for writes**.
-No host changes are made by this adapter. See [COMPATIBILITY.md](COMPATIBILITY.md)
-for exact source evidence and operator acceptance limits.
+**Authorization and channel scope:** both tools support owner direct **WebChat and
+Telegram** under the same host-context contract: `senderIsOwner === true`, prepared
+`memoryAudience.kind === "owner-private"`, explicit `chatType === "direct"`,
+`trigger === "user"`, `inputProvenance.kind === "external_user"` without a
+`sourceRole`, nonempty `sessionId` and `requesterSenderId`, and an ordinary root
+main/dashboard or direct-channel session key. CLI one-shot and memory-flush runs
+deny. Subagent/cron/heartbeat/inter-session/synthetic runs, groups, missing chat
+type or missing run provenance deny. `requesterProfileId` is optional metadata,
+not authority or a draft-binding requirement. Never supply context via tool
+parameters, config, prompt JSON or session lookups.
 
-**Residual risk accepted in Option C:** the agent interprets the owner's “yes”.
-The adapter cannot attest a fresh human confirmation message, a later turn, or
-successful display of the proposal; a model could wrongly call confirm immediately.
-Native forwarding metadata is not projected to these tools, so a forwarded message
-is **not detectable**. If a future host supplies `messageProvenance: "forwarded"`,
-the adapter denies it; absent provenance does not block Option C. Copy/paste and
-quotations can also mislead the agent. This is agent-asserted consent, not a
-transport-attested reply protocol; no `inbound_claim`/`message_sent` dependency remains.
+**Installed-host gap:** Telegram owner authorization reaches the tool context, but
+`chatType` does not: it stops before the public tool-factory projection. Neither
+`trigger` nor `inputProvenance` reaches that projection. Consequently writes fail
+closed on the inspected installed host on **both channels**; synthetic unit tests
+prove adapter behavior, not Telegram runtime acceptance. No host patch is made.
+See [COMPATIBILITY.md](COMPATIBILITY.md) for exact file:line evidence.
+
+**Residual risk accepted in Option C:** owner account compromise = owner, on
+Telegram as on WebChat. There is no additional browser requester-profile trust
+requirement. The agent interprets the owner's “yes”; the adapter cannot attest a
+fresh confirmation message, a later turn, or successful display of the proposal.
+A model could wrongly confirm immediately. Native forwarding metadata is not
+currently projected; forwarding is not detectable there. Any projected
+`messageProvenance: "forwarded"` or native forwarding metadata denies operations;
+missing forwarding metadata alone is allowed. Copy/paste and quotations can also
+mislead the agent. This is agent-asserted consent, not a transport-attested reply
+protocol; no `inbound_claim`/`message_sent` dependency remains. Requiring host run
+provenance excludes automation, not forwards or semantic consent errors.
 
 Semantically reject credentials, secrets and transient health/dose state before
 proposal. Conservative adapter screening and backend validation are additional
@@ -543,9 +551,9 @@ read-back; do not confuse log redaction with history deletion.
 Review/merge PR #23 after CI and independent approval, release a new minor adapter
 version, install that pinned release, merge the SecretRef config above, and use the
 separately approved Gateway restart procedure. Verify SDK/SecretRef and the local
-requester-profile contract against the candidate host before activation. In a real
-owner-private WebChat, propose, inspect the question, answer yes, confirm, verify
+chat-type and current-run provenance projection against the candidate host before
+activation. In real owner-private WebChat and Telegram direct chats, propose, inspect the question, answer yes, confirm, verify
 persistence/recall, then verify forget. Test nonowner/group/synthetic/expired/replayed
-and foreign draft denials. Telegram writes remain unavailable; do not fabricate
-profiles or bypass checks to enable them. No synthetic production facts are seeded
+and foreign draft denials. Installed-host writes remain blocked until the missing
+host fields are genuinely projected; do not fabricate them or bypass checks. No synthetic production facts are seeded
 by this task. No config, install, restart, merge or live facts request was performed.

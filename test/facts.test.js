@@ -5,7 +5,7 @@ import { createFacts, renderCurrentState, UNAVAILABLE } from "../src/facts.js";
 import plugin from "../index.js";
 
 const value = { action: "add", subject: "person:owner", predicate: "pref.language", value: "English", value_type: "string", unit: null, valid_from: null, privacy_class: "shareable" };
-const owner = { sessionKey: "agent:main:dashboard:private", sessionId: "incarnation", senderIsOwner: true, requesterSenderId: "owner", requesterProfileId: "profile", messageChannel: "webchat", memoryAudience: { kind: "owner-private" } };
+const owner = { sessionKey: "agent:main:dashboard:private", sessionId: "incarnation", senderIsOwner: true, requesterSenderId: "owner", requesterProfileId: "profile", messageChannel: "webchat", chatType: "direct", trigger: "user", inputProvenance: { kind: "external_user" }, memoryAudience: { kind: "owner-private" } };
 const config = { endpoint: "http://memory.test", facts: { enabled: true } };
 const response = (body) => ({ ok: true, json: async () => body });
 const text = (result) => result.content[0].text;
@@ -66,7 +66,12 @@ test("all host gates deny proposal and confirmation, even inherited owner-privat
     { sessionKey: undefined }, { sessionKey: "agent:main:subagent:child" }, { sessionKey: "agent:main:cron:job" },
     { sessionKey: "agent:main:heartbeat" }, { sessionKey: "agent:main:telegram:group:123" },
     { sessionId: undefined }, { sessionId: "" }, { requesterSenderId: undefined }, { requesterSenderId: "" },
-    { requesterProfileId: undefined }, { requesterProfileId: "" }, { messageChannel: "telegram" },
+    { chatType: undefined }, { chatType: "group" }, { chatType: "channel" }, { messageChannel: "discord" },
+    { trigger: undefined }, { trigger: "cron" }, { trigger: "heartbeat" },
+    { inputProvenance: undefined }, { inputProvenance: { kind: "inter_session" } },
+    { inputProvenance: { kind: "internal_system" } }, { inputProvenance: { kind: "external_user", sourceRole: "subagent" } },
+    { oneShotCliRun: true }, { memoryFlush: {} },
+    ...["forward_origin", "forwarded", "ForwardedFrom", "ForwardedFromType", "ForwardedFromId", "ForwardedDate", "ForwardedFromUsername", "ForwardedFromTitle", "ForwardedFromSignature", "ForwardedFromChatType", "ForwardedFromMessageId", "ReplyToForwardedFrom"].map((key) => ({ [key]: "present" })),
     { messageProvenance: "forwarded" },
     { assertInvocationCurrent() { throw Error("revoked"); } }, { assertMemoryAudienceCurrent() { throw Error("revoked"); } },
   ]) {
@@ -77,16 +82,35 @@ test("all host gates deny proposal and confirmation, even inherited owner-privat
       assert.match(text(await h.propose()), /unavailable/); assert.equal(h.calls.length, 1);
     } finally { h.close(); }
   }
-  // Missing synthetic-run profile, even with a root/main session, blocks cron,
-  // heartbeat and inter-session continuations. Names and owner booleans cannot replace it.
+  // Owner/private root authority alone cannot authorize automated continuations.
   for (const kind of ["cron", "heartbeat", "inter_session"]) {
-    const h = harness({ ctx: { sessionKey: "agent:main:main", requesterProfileId: undefined, runKind: kind } });
+    const h = harness({ ctx: { sessionKey: "agent:main:main", requesterProfileId: undefined, trigger: kind } });
     try { assert.match(text(await h.propose()), /unavailable/); assert.equal(h.calls.length, 0); } finally { h.close(); }
   }
 });
 
-test("draft binding rejects foreign sender/profile/session/incarnation and unknown ids", async () => {
-  for (const field of ["requesterSenderId", "requesterProfileId", "sessionId", "sessionKey"]) {
+test("owner direct WebChat and Telegram work without a requester profile", async () => {
+  for (const messageChannel of ["webchat", "telegram"]) {
+    for (const sessionKey of ["agent:main:main", "agent:main:direct:owner", `agent:main:${messageChannel}:direct:owner`, `agent:main:${messageChannel}:default:direct:owner`]) {
+      const h = harness({ ctx: { messageChannel, sessionKey, requesterProfileId: undefined, forwarded: undefined } });
+      try { const id = await h.ready(); h.ctx.requesterProfileId = "optional-metadata"; assert.match(text(await h.confirm(id)), /committed/); } finally { h.close(); }
+    }
+  }
+});
+
+test("Telegram groups, nonowners, missing chat type and unprojected run origin deny both tools", async () => {
+  for (const bad of [{ chatType: "group" }, { senderIsOwner: false }, { chatType: undefined }, { trigger: undefined }, { inputProvenance: undefined }]) {
+    const h = harness({ ctx: { messageChannel: "telegram", requesterProfileId: undefined } });
+    try {
+      const id = await h.ready(); Object.assign(h.ctx, bad);
+      assert.match(text(await h.propose()), /unavailable/); assert.match(text(await h.confirm(id)), /unavailable/);
+      assert.equal(h.calls.length, 1);
+    } finally { h.close(); }
+  }
+});
+
+test("draft binding rejects foreign sender/session/incarnation and unknown ids", async () => {
+  for (const field of ["requesterSenderId", "sessionId", "sessionKey"]) {
     const h = harness();
     try { const id = await h.ready(); h.ctx[field] = field === "sessionKey" ? "agent:main:main" : "foreign"; assert.match(text(await h.confirm(id)), /unavailable/); assert.equal(h.calls.length, 1); } finally { h.close(); }
   }
