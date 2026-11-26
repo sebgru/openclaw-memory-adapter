@@ -210,6 +210,7 @@ test("feature on renders current facts automatically in unified search and auto-
   const h = harness({ plugin: true, current: { state: "resolved", current: { value: "PRIVATE FACT" } }, search: { results: [], current_state: [{ current: { value: "PRIVATE FACT", privacy_class: "personal" } }] } });
   try {
     assert.match(text(await h.tools.unified_memory_search.execute("call", { query: "language" })), /PRIVATE FACT/);
+    assert.match(h.calls[0].url, /fact_subject=person%3Aowner&fact_predicate=pref.language/);
     globalThis.fetch = async (url) => response(url.includes("/facts/current") ? { state: "resolved", current: { value: "PRIVATE FACT" } } : { results: [] });
     const result = await h.hooks.before_prompt_build({ prompt: "language?" }, { ...h.ctx, trigger: "user" });
     assert.match(result.prependContext, /PRIVATE FACT/); assert.deepEqual(h.logs, []);
@@ -231,6 +232,33 @@ test("automatic current slice uses concrete backend slots; malformed or failed l
   try {
     await h.facts.current(h.ctx);
     assert.equal(h.calls.length, 18);
+    assert.ok(h.calls.some(({ url }) => url.includes("predicate=person.age_stated")));
     assert.equal(h.calls.every(({ url }) => url.includes("subject=person%3Aowner") && url.includes("predicate=")), true);
   } finally { h.close(); }
+});
+
+
+test("automatic facts overlap evidence and stay inside the registered hook deadline", async () => {
+  // Each HTTP phase fits its timeout, but three sequential phases exceed the hook.
+  for (const evidenceFails of [false, true]) {
+    const h = harness({ plugin: true });
+    try {
+      let deadline;
+      plugin.register({ pluginConfig: config, on(name, _fn, options) { if (name === "before_prompt_build") deadline = options.timeoutMs; }, registerTool() {} });
+      let searches = 0;
+      globalThis.fetch = async (url) => {
+        await new Promise((resolve) => setTimeout(resolve, 1150));
+        if (url.includes("/facts/current")) return response({ state: "resolved", current: { value: "PRIVATE FACT" } });
+        searches++;
+        if (evidenceFails) throw Error("synthetic failure");
+        return response({ results: [] });
+      };
+      const started = Date.now();
+      const result = await h.hooks.before_prompt_build({ prompt: "What about Acme GmbH?" }, h.ctx);
+      assert.ok(Date.now() - started < deadline, "facts must not consume a third sequential phase");
+      assert.equal(searches, evidenceFails ? 1 : 2);
+      assert.match(result.prependContext, /PRIVATE FACT/);
+      if (evidenceFails) assert.match(result.prependContext, /retrieval unavailable/);
+    } finally { h.close(); }
+  }
 });

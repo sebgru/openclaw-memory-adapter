@@ -2,7 +2,7 @@ import { getPreparedPluginSecretInput } from "openclaw/plugin-sdk/secret-input-r
 import { normalizeResults, formatMemoryContext } from "./client.js";
 
 export const UNAVAILABLE = "Current facts unavailable; do not infer absence or acknowledge a save. Generate a fresh draft after checking the backend.";
-const REGISTRY = ["pref.language", "pref.timezone", "identity.full_name", "identity.date_of_birth", "identity.sex", "body.height", "housing.address", "family.spouse", "family.child", "education.school", "employment.employer", "vehicle.owned", "insurance.policy", "health.condition", "health.therapy", "health.device", "contact.mobile_number"];
+const REGISTRY = ["person.age_stated", "pref.language", "pref.timezone", "identity.full_name", "identity.date_of_birth", "identity.sex", "body.height", "housing.address", "family.spouse", "family.child", "education.school", "employment.employer", "vehicle.owned", "insurance.policy", "health.condition", "health.therapy", "health.device", "contact.mobile_number"];
 export const DraftParameters = {
   type: "object", additionalProperties: false,
   properties: {
@@ -184,7 +184,9 @@ export function createFacts(api, config) {
         const check = () => readGuard(ctx);
         check();
         const query = new URLSearchParams({ q: params.query, scope: params.scope ?? "all", profile: "tool", limit: String(params.maxResults ?? 5) });
-        for (const field of ["fact_subject", "fact_predicate"]) if (params[field] !== undefined) query.set(field, params[field]);
+        // Explicit markers also select the backend's private fact-log redaction path.
+        query.set("fact_subject", params.fact_subject ?? "person:owner");
+        query.set("fact_predicate", params.fact_predicate ?? "pref.language");
         const response = await request("/unified/search?" + query, undefined, check);
         const state = params.fact_subject !== undefined || params.fact_predicate !== undefined
           ? renderCurrentState(response.current_state) : await current(ctx);

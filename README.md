@@ -533,7 +533,9 @@ or failed fact lanes show **unavailable**, never verified absence. Restricted
 records, derived values and source identifiers are recursively withheld; the
 legacy `include_restricted` parameter does not authorize disclosure under Option C.
 Fact values, query text, credentials and backend exception details are not logged
-by the fact path. Agent-visible tool results/chat history necessarily contain the
+by the adapter fact path. Unified fact-tool searches carry explicit slot markers
+so the compatible backend also suppresses query logging. Ordinary evidence-only
+prompt searches retain the backend's general-search logging policy. Agent-visible tool results/chat history necessarily contain the
 read-back; do not confuse log redaction with history deletion.
 
 ### Later operator enablement

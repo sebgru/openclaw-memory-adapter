@@ -80,7 +80,7 @@ export default definePluginEntry({
     const facts = createFacts(api, config);
     api.on("before_prompt_build", async (event, ctx) => {
       if (!eligible(event, ctx, config)) return undefined;
-      const factNotice = config.facts?.enabled === true ? await facts.current(ctx) : undefined;
+      const factNoticePromise = config.facts?.enabled === true ? facts.current(ctx) : undefined;
       const turnReceipts = config.turnReceipts === true;
       const scope = "all";
       const turnId = turnReceipts ? nextTurnId(event, ctx) : undefined;
@@ -170,6 +170,7 @@ export default definePluginEntry({
             outcome: documents.failed ? "unavailable" : "merged",
           })}`);
         }
+        const factNotice = await factNoticePromise;
         const { results, warnings, conflicts, coverage, lowConfidence } = retrieval;
         if (warnings?.length) {
           api.logger.warn?.(`memory-adapter: service reported ${warnings.length} warning(s); details omitted`);
@@ -207,6 +208,7 @@ export default definePluginEntry({
         return { prependContext };
       } catch {
         documentsAbort.abort();
+        const factNotice = await factNoticePromise;
         api.logger.warn?.("memory-adapter: retrieval failed; details omitted");
         if (!turnReceipts) {
           return { prependContext: [factNotice, FAILURE_NOTICE].filter(Boolean).join("\n\n") };
