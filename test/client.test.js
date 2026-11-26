@@ -1,4 +1,5 @@
 import test from "node:test";
+import { readFileSync } from "node:fs";
 import assert from "node:assert/strict";
 import {
     buildMemoryContextDetails,
@@ -428,7 +429,7 @@ const CTX = { agentId: "a", chatType: "direct", chatId: "1" };
 
 test("plugin declares and registers unified_memory_search as a callable tool", () => {
     const handlers = setup(ENDPOINT);
-    assert.deepEqual(plugin.contracts.tools, ["unified_memory_search"]);
+    assert.deepEqual(JSON.parse(readFileSync(new URL("../openclaw.plugin.json", import.meta.url))).contracts.tools, ["unified_memory_search", "memory_fact_propose", "memory_fact_confirm"]);
     assert.equal(handlers.toolOptions.name, "unified_memory_search");
     assert.equal(handlers.tool.name, "unified_memory_search");
     assert.equal(typeof handlers.tool.execute, "function");

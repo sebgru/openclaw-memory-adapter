@@ -418,3 +418,174 @@ Tests use a local stub for `openclaw/plugin-sdk/plugin-entry` (see
 `test/stubs/`) so the plugin entry is importable and fully covered without a
 running OpenClaw Gateway. When the real `openclaw` peer package is present, it
 is used instead.
+
+## Opt-in owner-private fact drafts (D.3)
+
+**Off by default.** Requires memory backend v1.24.0 (authenticated fact routes)
+plus the OpenClaw hook/audience/prepared-secret contracts in COMPATIBILITY.md.
+This does not enable automatic profile injection, extraction, curated-file edits,
+or a second fact-search tool.
+
+Merge this fragment into the existing adapter entry (retain your existing
+endpoint, scopes, chat allowlists and other settings):
+
+```json
+{
+  "plugins": {
+    "entries": {
+      "memory-adapter": {
+        "enabled": true,
+        "config": {
+          "endpoint": "http://memory-sebg:8080",
+          "facts": {
+            "enabled": true,
+            "bearerToken": {
+              "source": "exec",
+              "provider": "secretref",
+              "id": "MEMORY_FACTS_WRITE_TOKEN"
+            }
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+The existing `secretref` provider must resolve the **same instance token** used by
+`memory-sebg`, not a new token. The manifest declares `facts.bearerToken` as a
+capability-owned SecretRef input. The SDK's `getPreparedPluginSecretInput` supplies
+only the startup-prepared secret in current plugin scope. Missing/unavailable
+secret fails closed; no environment fallback, plaintext config, cold resolver or
+credential logging is used. Requests reject redirects and credential-bearing URLs.
+
+### Option C: explicit agent tools
+
+1. The agent calls `memory_fact_propose` when the owner says “remember this”,
+   or suggests a reference fact itself. It supplies the registry-linked subject,
+   predicate, exact value/type/unit/privacy and effective date (unknown stays null).
+   The backend creates `/facts/drafts`, never a saved fact. The returned short
+   question includes the draft id, value and lifecycle targets. Show it to the owner.
+2. **Wait for the owner's affirmative response in a later turn**, then call
+   `memory_fact_confirm` with that exact draft id. Do not confirm your own suggestion,
+   quoted/forwarded text, silence or ambiguous replies. No/edit means no confirmation;
+   an edit requires a new proposal. The adapter binds the id to host session,
+   incarnation and sender (requester profile is optional metadata), with a TTL of at most **five minutes**
+   (or the backend's earlier expiry). Foreign, replayed or expired drafts are denied.
+   Consumption happens before network I/O: an uncertain result must not be retried;
+   check backend state and propose anew.
+3. End, replace, retract and forget use the same proposal/confirmation pattern.
+   Forget maps to backend retract. Successful retraction clears pending drafts and
+   in-flight authority. Session lifecycle/reset invalidates drafts; restart loses
+   volatile state. Curated-file mirrors require separate reviewed diffs. Forget
+   purges the store value, not prior chats/tool histories, external caches or backups.
+
+**Authorization and channel scope:** both tools always require the host-computed
+`senderIsOwner === true`, a nonempty session incarnation (`sessionId`), and a
+host-generated root key matching `agent:<id>:main`,
+`agent:<id>:dashboard:<uuid>` or `agent:<id>:<channel>:direct:<peer>`.
+Group/channel/subagent/cron/hook/heartbeat/inter-session and other key shapes deny,
+even with inherited private audience authority. Account-qualified and per-peer
+direct keys are outside this bounded contract. CLI one-shot and memory-flush runs
+deny. Optional chat-type/run-kind/provenance fields, when present, must not
+contradict a direct external-user turn; their absence is allowed. Any projected
+forwarded signal denies.
+
+When `memoryAudience` is present it must be `owner-private`, with a callable
+`assertMemoryAudienceCurrent()` checked before every backend call and after
+awaits. A conversation, unknown or invalid audience **never falls back**. When
+`memoryAudience` is absent, the host-generated private root key plus the
+host-computed owner flag are the private-chat proof. This intentional fallback
+supports native-memory-disabled hosts and CLI/MCP runtimes without weakening
+non-owner or group denial. Context must come from the host tool factory, never
+from tool parameters, config, prompt JSON or session lookups.
+
+Drafts bind to session key + incarnation, then to `requesterSenderId` if present,
+else `requesterProfileId` if present, else the session alone. Missing SenderId
+does not deny. Changing identity tier, sender, profile (when profile-bound), session
+or incarnation requires a new draft; profiles are not an additional owner gate.
+
+**Installed-host compatibility: YES for owner Telegram direct and authenticated
+operator.admin WebChat/dashboard private root sessions after install + enable**
+(with the documented prepared write credential and backend configured). Static
+bundle inspection verifies owner flag delivery to both embedded and claude-cli
+MCP plugin tool contexts. Neither disabled native `memory-core` nor omitted
+Control UI SenderId blocks writes with this fallback. This is source-backed
+compatibility, **not live runtime acceptance**; no install or live writes were
+performed. Unified-tool fact recall uses the same owner/root fallback. Prompt-hook
+fact recall remains unavailable on this inspected host because its context omits
+`senderIsOwner`; use `unified_memory_search` as the trusted working recall path.
+See [COMPATIBILITY.md](COMPATIBILITY.md) for exact file:line evidence.
+
+**Residual risk accepted in Option C:** owner account compromise = owner, on
+Telegram as on WebChat. There is no additional browser requester-profile trust
+requirement. The agent interprets the owner's “yes”; the adapter cannot attest a
+fresh confirmation message, a later turn, or successful display of the proposal.
+A model could wrongly confirm immediately. Native forwarding metadata is not
+currently projected; forwarding is not detectable there. Any projected
+`messageProvenance: "forwarded"` or native forwarding metadata denies operations;
+missing forwarding metadata alone is allowed. Copy/paste and quotations can also
+mislead the agent. This is agent-asserted consent, not a transport-attested reply
+protocol; no `inbound_claim`/`message_sent` dependency remains. Root-key screening and any available contrary run signals exclude identifiable
+automation, not forwards or semantic consent errors. Automated work reusing a root
+key without a projected run signal is indistinguishable from a user turn.
+
+Semantically reject credentials, secrets and transient health/dose state before
+proposal. Conservative adapter screening and backend validation are additional
+checks, not complete semantic detection. Custom/derived/volatile predicates are
+unsupported; weight stays in its canonical food log.
+
+### Automatic current-fact recall
+
+When the flag is on, `unified_memory_search` and eligible `before_prompt_build`
+auto-recall render current facts **before evidence**, without needing an explicit
+fact tool call when the host supplies owner authority. Read access uses exactly
+the write guard: `senderIsOwner === true`, a supported private root, and either
+a current owner-private audience or the absent-audience fallback described above.
+Present nonprivate/expired audiences never fall back. Subagents remain denied,
+even with inherited private authority (a deliberately conservative restriction).
+All checks run before requests and after awaits; failures mean unavailable, not
+absence. Restricted current-state redaction is unchanged.
+
+**Inspected-host limitation:** both native and harness `before_prompt_build`
+contexts omit `senderIsOwner`. Automatic hook facts therefore fail closed. The
+host tool factory (including local Claude MCP) does supply the computed owner
+flag, so `unified_memory_search` is the safest working recall source for Telegram
+owner direct and authenticated dashboard private roots after install + enable.
+No sender-id/config inference or cross-turn authority cache is used. See
+[COMPATIBILITY.md](COMPATIBILITY.md) for exact bundle citations.
+
+The backend requires a concrete slot, so automatic recall uses a bounded parallel
+slice of the 18 registry predicates for `person:owner` (no item key), with no cache
+or free-text predicate guessing. It is **not enumeration of all people or keyed
+set members**. Use explicit `fact_subject` and `fact_predicate` for another concrete
+slot; the existing backend/API still needs an item-key enumeration extension for
+complete keyed-family/vehicle/etc. profiles. Automatic slices do not claim that
+those other slots are absent. Existing baseline/topic/entity evidence retrieval
+remains in auto-recall. With facts enabled, explicit unified searches use the
+bounded authenticated fact-aware path; legacy receipts/details remain unchanged
+when the feature is off.
+
+Current-state JSON preserves source/date/rank, alternatives/history and
+stale/conflict/unreviewed/mail-only/unknown/derived disclosures. T0 means
+agent-asserted owner provenance, not curated-file verification. Missing, malformed
+or failed fact lanes show **unavailable**, never verified absence. Restricted
+records, derived values and source identifiers are recursively withheld; the
+legacy `include_restricted` parameter does not authorize disclosure under Option C.
+Fact values, query text, credentials and backend exception details are not logged
+by the adapter fact path. Unified fact-tool searches carry explicit slot markers
+so the compatible backend also suppresses query logging. Ordinary evidence-only
+prompt searches retain the backend's general-search logging policy. Agent-visible tool results/chat history necessarily contain the
+read-back; do not confuse log redaction with history deletion.
+
+### Later operator enablement
+
+Review/merge PR #23 after CI and independent approval, release a new minor adapter
+version, install that pinned release, merge the SecretRef config above, and use the
+separately approved Gateway restart procedure. Verify SDK/SecretRef and the local
+chat-type and current-run provenance projection against the candidate host before
+activation. In real owner-private WebChat and Telegram direct chats, propose, inspect the question, answer yes, confirm, verify
+persistence/recall, then verify forget. Test nonowner/group/synthetic/expired/replayed
+and foreign draft denials. Installed-host writes remain blocked until the missing
+host fields are genuinely projected; do not fabricate them or bypass checks. No synthetic production facts are seeded
+by this task. No config, install, restart, merge or live facts request was performed.

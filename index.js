@@ -1,3 +1,4 @@
+import { createFacts } from "./src/facts.js";
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import { LOW_CONFIDENCE_NOTICE, buildMemoryContextDetails, formatMemoryContext, searchUnified } from "./src/client.js";
 import { buildReceipt, formatReceiptNotice, receiptTraceSummary } from "./src/receipt.js";
@@ -25,6 +26,9 @@ const UnifiedMemorySearchParameters = {
     query: { type: "string", minLength: 1, description: "Question or terms to search for." },
     scope: { type: "string", enum: ["all", "main", "archive", "documents"], description: "Search scope; default all. Use documents for indexed document recall." },
     maxResults: { type: "integer", minimum: 1, maximum: 10 },
+    fact_subject: { type: "string", description: "Explicit private current-fact lookup subject." },
+    fact_predicate: { type: "string", description: "Registry predicate for explicit private current-fact recall." },
+    include_restricted: { type: "boolean", description: "Only if owner explicitly requested restricted facts." },
   },
   required: ["query"],
 };
@@ -71,11 +75,14 @@ export default definePluginEntry({
   id: "memory-adapter",
   name: "External Memory Adapter",
   description: "Adds bounded external memory retrieval without invoking indexing.",
-  contracts: { tools: ["unified_memory_search"] },
   register(api) {
     const config = api.pluginConfig ?? {};
+    const facts = createFacts(api, config);
     api.on("before_prompt_build", async (event, ctx) => {
       if (!eligible(event, ctx, config)) return undefined;
+      // Some hosts omit senderIsOwner here. Facts must then fail closed; never
+      // infer owner from senderId/sessionKey or reuse a cached tool context.
+      const factNoticePromise = config.facts?.enabled === true ? facts.current(ctx) : undefined;
       const turnReceipts = config.turnReceipts === true;
       const scope = "all";
       const turnId = turnReceipts ? nextTurnId(event, ctx) : undefined;
@@ -165,6 +172,10 @@ export default definePluginEntry({
             outcome: documents.failed ? "unavailable" : "merged",
           })}`);
         }
+        // Evidence may finish after the facts lane. Recheck authority at emission
+        // without fetching again, including when evidence retrieval failed.
+        const factNotice = config.facts?.enabled === true
+          ? facts.revalidateCurrent(ctx, await factNoticePromise) : undefined;
         const { results, warnings, conflicts, coverage, lowConfidence } = retrieval;
         if (warnings?.length) {
           api.logger.warn?.(`memory-adapter: service reported ${warnings.length} warning(s); details omitted`);
@@ -177,7 +188,7 @@ export default definePluginEntry({
             : "";
           const lowConfidenceWarning = context && lowConfidence ? LOW_CONFIDENCE_NOTICE : "";
           const topicWarning = documents?.failed ? TOPIC_DOCUMENTS_NOTICE : "";
-          const prependContext = [context, lowConfidenceWarning, entityWarning, topicWarning].filter(Boolean).join("\n\n");
+          const prependContext = [factNotice, context, lowConfidenceWarning, entityWarning, topicWarning].filter(Boolean).join("\n\n");
           return prependContext ? { prependContext } : undefined;
         }
         const { text: context, truncated, includedCount } = buildMemoryContextDetails(results, maxContextLength);
@@ -198,17 +209,21 @@ export default definePluginEntry({
         logReceiptTrace(api, receipt);
         const notice = formatReceiptNotice(receipt);
         const hasUsableContext = includedCount > 0;
-        const prependContext = [hasUsableContext ? context : "", notice].filter(Boolean).join("\n\n");
+        const prependContext = [factNotice, hasUsableContext ? context : "", notice].filter(Boolean).join("\n\n");
         return { prependContext };
-      } catch (error) {
+      } catch {
         documentsAbort.abort();
-        api.logger.warn?.(`memory-adapter: retrieval failed: ${String(error)}`);
+        // Evidence may finish after the facts lane. Recheck authority at emission
+        // without fetching again, including when evidence retrieval failed.
+        const factNotice = config.facts?.enabled === true
+          ? facts.revalidateCurrent(ctx, await factNoticePromise) : undefined;
+        api.logger.warn?.("memory-adapter: retrieval failed; details omitted");
         if (!turnReceipts) {
-          return { prependContext: FAILURE_NOTICE };
+          return { prependContext: [factNotice, FAILURE_NOTICE].filter(Boolean).join("\n\n") };
         }
         const receipt = buildReceipt({ turnId, scope, startedAt, endedAt: Date.now(), error: true });
         logReceiptTrace(api, receipt);
-        return { prependContext: formatReceiptNotice(receipt) };
+        return { prependContext: [factNotice, formatReceiptNotice(receipt)].filter(Boolean).join("\n\n") };
       }
     }, {
       timeoutMs: Math.max(
@@ -219,12 +234,13 @@ export default definePluginEntry({
         ),
       ) + 250,
     });
-    api.registerTool((_ctx) => ({
+    api.registerTool((ctx) => ({
       name: "unified_memory_search",
       label: "Unified Memory Search",
       description: "Search authoritative memory, output metadata, indexed documents, and the session archive through the external memory service.",
       parameters: UnifiedMemorySearchParameters,
       execute: async (_toolCallId, params) => {
+        if (config.facts?.enabled === true || params.fact_subject !== undefined || params.fact_predicate !== undefined) return facts.recall(ctx, params);
         const scope = params.scope ?? config.scope ?? "all";
         const turnId = (typeof _toolCallId === "string" && _toolCallId.slice(0, 128)) || globalThis.crypto.randomUUID();
         const startedAt = Date.now();
