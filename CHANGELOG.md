@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.12.0
 
 - Add disabled-by-default Option C SecretRef-authenticated owner-private propose/confirm tools, lifecycle/forget drafts and automatic bounded current-fact recall. Agent-interpreted consent replaces unavailable inbound/delivery hooks; local authenticated requester profiles gate WebChat writes. Forwarding/consent residual risks and unsupported Telegram writes are documented. No deployment.
 
