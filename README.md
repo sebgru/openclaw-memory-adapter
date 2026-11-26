@@ -480,32 +480,40 @@ credential logging is used. Requests reject redirects and credential-bearing URL
    volatile state. Curated-file mirrors require separate reviewed diffs. Forget
    purges the store value, not prior chats/tool histories, external caches or backups.
 
-**Authorization and channel scope:** both tools accept eligible owner-private
-root contexts on any channel using host-projected fields: `senderIsOwner === true`,
-`memoryAudience.kind === "owner-private"`, a required callable
-`assertMemoryAudienceCurrent()` (checked before every backend call and after
-awaits), nonempty `sessionId` and `requesterSenderId`, and a root key matching
-`agent:<id>:main`, `agent:<id>:dashboard:<uuid>` or
-`agent:<id>:<channel>:direct:<peer>`. Group/subagent/cron/hook/heartbeat and other
-key shapes deny, even with an inherited private audience. Account-qualified and
-per-peer direct keys are deliberately outside this bounded contract. CLI one-shot
-and memory-flush runs deny. Optional chat-type/run-kind/provenance fields, when
-present, must not contradict a direct external-user turn; their absence is allowed.
-`requesterProfileId` is optional metadata, not authority or draft binding. Never
-supply context via tool parameters, config, prompt JSON or session lookups.
+**Authorization and channel scope:** both tools always require the host-computed
+`senderIsOwner === true`, a nonempty session incarnation (`sessionId`), and a
+host-generated root key matching `agent:<id>:main`,
+`agent:<id>:dashboard:<uuid>` or `agent:<id>:<channel>:direct:<peer>`.
+Group/channel/subagent/cron/hook/heartbeat/inter-session and other key shapes deny,
+even with inherited private audience authority. Account-qualified and per-peer
+direct keys are outside this bounded contract. CLI one-shot and memory-flush runs
+deny. Optional chat-type/run-kind/provenance fields, when present, must not
+contradict a direct external-user turn; their absence is allowed. Any projected
+forwarded signal denies.
 
-**Installed-host compatibility: no, installing and enabling this adapter alone
-will not enable both Telegram and WebChat writes on the inspected host.** The host
-does not project `chatType`, `trigger` or `inputProvenance`; those absent fields
-no longer block writes. Telegram owner direct contexts pass mocked
-proposal/confirmation with a host-minted private audience. Dashboard UUID contexts
-pass only if they also carry a real sender id: the installed Control UI ingress
-deliberately omits `SenderId`, so ordinary dashboard writes fail closed. Optional
-requester profiles are not substituted for sender binding. In addition, fresh
-audience minting requires session admission and an enabled native memory provider;
-the inspected configuration disables `memory-core` and this adapter registers no
-native provider. Thus ordinary Telegram writes also lack the required audience
-on this configuration. Neither host limitation is repaired by this adapter.
+When `memoryAudience` is present it must be `owner-private`, with a callable
+`assertMemoryAudienceCurrent()` checked before every backend call and after
+awaits. A conversation, unknown or invalid audience **never falls back**. When
+`memoryAudience` is absent, the host-generated private root key plus the
+host-computed owner flag are the private-chat proof. This intentional fallback
+supports native-memory-disabled hosts and CLI/MCP runtimes without weakening
+non-owner or group denial. Context must come from the host tool factory, never
+from tool parameters, config, prompt JSON or session lookups.
+
+Drafts bind to session key + incarnation, then to `requesterSenderId` if present,
+else `requesterProfileId` if present, else the session alone. Missing SenderId
+does not deny. Changing identity tier, sender, profile (when profile-bound), session
+or incarnation requires a new draft; profiles are not an additional owner gate.
+
+**Installed-host compatibility: YES for owner Telegram direct and authenticated
+operator.admin WebChat/dashboard private root sessions after install + enable**
+(with the documented prepared write credential and backend configured). Static
+bundle inspection verifies owner flag delivery to both embedded and claude-cli
+MCP plugin tool contexts. Neither disabled native `memory-core` nor omitted
+Control UI SenderId blocks writes with this fallback. This is source-backed
+compatibility, **not live runtime acceptance**; no install or live writes were
+performed. Fact recall still requires an owner-private memory audience; this
+write-gate fallback does not change the existing recall contract.
 See [COMPATIBILITY.md](COMPATIBILITY.md) for exact file:line evidence.
 
 **Residual risk accepted in Option C:** owner account compromise = owner, on

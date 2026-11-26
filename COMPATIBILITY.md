@@ -27,19 +27,29 @@ and manifest `configContracts.secretInputs` must exist in the candidate image.
 
 ### Telegram and WebChat host-context contract (2026-11-26)
 
-Both channels (and other channels) use the same host-projected gates:
-`senderIsOwner === true`, `memoryAudience.kind === "owner-private"`, required
-callable `assertMemoryAudienceCurrent`, nonempty sender/incarnation, and only root
-`agent:<id>:main`, `agent:<id>:dashboard:<uuid>` or
-`agent:<id>:<channel>:direct:<peer>` keys. Reserved automation channel names and
-all other shapes deny. `requesterProfileId` is optional metadata only. Optional
-`trigger`, `runKind`, `runType`, `inputProvenance`, `chatType`, one-shot and flush
-signals deny when contrary; absent unprojected fields do not block writes.
+Both channels use the same host-projected write gates: always
+`senderIsOwner === true`, nonempty session incarnation, and only host-generated
+root `agent:<id>:main`, `agent:<id>:dashboard:<uuid>` or
+`agent:<id>:<channel>:direct:<peer>` keys. Reserved automation/inter-session channel
+names and all other shapes deny. If `memoryAudience` is present, it must be
+owner-private and its required `assertMemoryAudienceCurrent()` must pass before
+each backend call and across awaits. Conversation/unknown/invalid audiences deny,
+never fall back. **Only an absent audience** permits the private root-key fallback:
+the session key is host-generated and the owner flag is host-computed, not model
+arguments. These are the trust basis for private owner-chat writes on hosts that
+do not mint memory audiences (native provider disabled or CLI/MCP runtime).
+
+Draft binding is session key + incarnation + sender when present, else profile
+when present, else session alone. Missing SenderId does not deny. Identity tier
+changes cannot downgrade a pending draft's binding. A profile is not an additional
+owner-authorization requirement. Optional trigger/run-kind/input-provenance/chat-type,
+one-shot and flush signals deny when contrary; missing fields do not block writes.
+Any projected forwarded signal denies. Recall retains its existing audience gate.
 
 Installed local OpenClaw 2026.11.4 source evidence (not upstream guarantees):
 
 - **Projection:** `/app/dist/openclaw-tools-BcYM16A_.mjs:549-582` carries
-  session key/id (558-559), message channel (569), sender id (573), optional local
+  session key/id (559-560), message channel (569), sender id (573), optional local
   profile patch (574), owner (575), audience (576), flush (577), audience currency
   closure (578) and one-shot flag (581). No chatType/trigger/inputProvenance.
   Audience session binding is asserted first at line 528.
@@ -81,7 +91,8 @@ Installed local OpenClaw 2026.11.4 source evidence (not upstream guarantees):
   `sessionCtx.SenderId` (`/app/dist/get-reply-DFYHTxys.mjs:3554`) and projects as
   `requesterSenderId` (`/app/dist/agent-tools-DD0_71KJ.mjs:768`). The optional
   profile carrier does not fill that field. Ordinary dashboard writes therefore
-  fail the required sender binding even with owner/private audience authority.
+  use profile binding when available, otherwise session + incarnation binding.
+  The missing sender no longer blocks writes.
 - **Host-generated keys:** `/app/dist/session-key-CSDERtm3.mjs:503` generates
   `agent:<id>:<channel>:direct:<peer>`; lines 506-510 choose the main key.
   `/app/dist/session-create-key-BJp-9Sd1.mjs:18` creates dashboard UUID keys.
@@ -91,25 +102,50 @@ Installed local OpenClaw 2026.11.4 source evidence (not upstream guarantees):
   `/app/dist/inbound-context-DnPzLOsP.mjs:35`, but are not publicly projected.
   Any supplied forwarded signal denies; absence is allowed.
 
-**Compatibility result: NO on the inspected current host if only this adapter
-is installed and enabled.** Telegram direct root
-`agent:main:telegram:direct:<id>` can pass the gate with its real sender id and
-a host-minted private audience; dashboard UUID shapes can pass only with an actual
-sender id. The current Control UI ingress omits that id, so dashboard writes deny
-without inventing identity or weakening draft binding. Separately, the inspected
-configuration disables `memory-core` and has no explicit memory slot override;
-this hook/tool adapter registers no `providerRuntime`. Fresh ordinary runs
-therefore fail the native-provider prerequisite at embedded-agent line 4523 and
-have no host-minted audience. This blocks ordinary Telegram writes too. A valid
-already host-minted delegated audience is a distinct path, not ordinary channel
-acceptance. Host identity delivery and audience production need separate changes;
-none are performed here.
+### Claude CLI/MCP owner delivery (same inspected bundle)
 
-Mocked proposal/confirm tests cover projected Telegram direct and sender-bearing
-dashboard contexts, realistic sender-less Control UI denial, group/nonowner/foreign/
-subagent/cron/inter-session/non-private/expired denials. Static bundle inspection
-and mocked HTTP are **not live runtime acceptance**. No config changes,
-installation, restart or live /facts calls were performed.
+- Reply dispatch spreads `buildReplyRunStateParams` into CLI run parameters at
+  `/app/dist/agent-runner-run-CQDcBS33.mjs:2313`; that builder forwards
+  `senderIsOwner` at `/app/dist/agent-runner-run-params-BJ1Xjo0R.mjs:174`.
+  The sender is forwarded separately at agent-runner-run line 2399.
+- Claude registers `bundleMcp: true`, mode `claude-config-file`, at
+  `/app/dist/cli-backend-BAKJ1l_y.mjs:106-107`. The local CLI preparation path
+  enables bundle MCP at `/app/dist/prepare.runtime-umyUIcT8.mjs:1373-1374`, builds
+  the grant context from run parameters at 1396-1407, and resolves tools using
+  that context at 1433-1451.
+- `/app/dist/mcp-grant-context-C2cIAZ_0.mjs:125-126` carries sessionId/runId;
+  line 156 sets `senderIsOwner: params.run.senderIsOwner === true`.
+  Lines 75-82 carry a real sender into channelContext when available, without
+  inventing one for dashboards. The finalized grant retains context at 19-22.
+- MCP authentication uses the bound client grant's owner flag at
+  `/app/dist/mcp-http-_ouwzu3w.mjs:111-114`, not an owner claim supplied by the
+  model. Its tool cache resolves this context at 418-434.
+  `/app/dist/mcp-http.runtime-orG6gnBl.mjs:174` calls shared gateway tool resolution;
+  `/app/dist/tool-resolution-DwA7pKWg.mjs:224-226` passes session incarnation and
+  owner into common tool options, 246 passes the session key, 280-281 passes
+  sender/optional profile, and 302 constructs OpenClaw/plugin tools. Final plugin
+  context projects owner at `/app/dist/openclaw-tools-BcYM16A_.mjs:575`.
+  No memory audience is added by this MCP route; the absent-audience fallback is
+  therefore needed. Neither missing audience nor missing dashboard sender is a
+  remaining write blocker.
+
+**Compatibility result: YES, Telegram owner direct; YES, authenticated
+operator.admin WebChat/dashboard private root sessions**, after adapter install +
+enable with its documented prepared write credential and reachable backend.
+The host-computed owner flag reaches the plugin in embedded and local claude-cli
+MCP paths. The native-memory-provider prerequisite remains true for audience
+minting but no longer blocks writes; missing Control UI SenderId uses the binding
+hierarchy above. Non-owner flags (including non-admin browser clients) still deny.
+No runtime config change is needed to address these two host gaps. Explicitly
+disabled tools, unconfigured credentials, or unsupported session key variants
+remain outside this success claim. Fact recall remains audience-gated.
+
+Mocked proposal/confirm tests cover Telegram direct without audience, dashboard
+without SenderId or audience, session-only/profile-bound drafts, hierarchical
+binding changes, group/channel/nonowner/foreign/subagent/cron/inter-session/
+non-private/expired denials, and valid private-audience/currentness behavior.
+Static bundle inspection and mocked HTTP are **not live runtime acceptance**.
+No config changes, installation, restart or live /facts calls were performed.
 
 ### Weaker consent contract and residual risk
 
@@ -125,7 +161,8 @@ risk, **not** transport-attested human authorization. Optional future host
 Owner account compromise = owner (Telegram and WebChat); no stronger browser-only
 requester-profile requirement is imposed.
 
-Draft ids bind to session/incarnation/sender for at most five minutes;
+Draft ids bind to session/incarnation and sender, else profile, else session alone
+for at most five minutes;
 replays, expired and foreign ids fail locally. Backend session references use
 separate random proposal/confirmation operation ids (agent assertions, not native
 message ids). Confirmation consumes before request; uncertain outcomes require a

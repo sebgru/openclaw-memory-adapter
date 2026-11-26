@@ -62,10 +62,10 @@ test("proposal never saves; explicit id confirmation saves once without inbound 
 
 test("all host gates deny proposal and confirmation, even inherited owner-private authority", async () => {
   for (const bad of [
-    { senderIsOwner: false }, { senderIsOwner: undefined }, { memoryAudience: undefined }, { memoryAudience: { kind: "conversation" } },
+    { senderIsOwner: false }, { senderIsOwner: undefined }, { memoryAudience: null }, { memoryAudience: {} }, { memoryAudience: { kind: "conversation" } },
     { sessionKey: undefined }, { sessionKey: "agent:main:subagent:child" }, { sessionKey: "agent:main:cron:job" },
     { sessionKey: "agent:main:heartbeat" }, { sessionKey: "cron:job" }, { sessionKey: "agent:main:hook:direct:id" }, { sessionKey: "agent:main:dashboard:not-a-uuid" }, { sessionKey: "agent:main:telegram:default:direct:id" }, { sessionKey: "agent:main:direct:owner" }, { sessionKey: "agent:main:inter-session:source" }, { sessionKey: "agent:main:telegram:group:123" },
-    { sessionId: undefined }, { sessionId: "" }, { requesterSenderId: undefined }, { requesterSenderId: "" },
+    { sessionId: undefined }, { sessionId: "" },
     { chatType: "group" }, { chatType: "channel" }, { assertMemoryAudienceCurrent: undefined },
     { trigger: "cron" }, { trigger: "heartbeat" }, { runKind: "inter_session" }, { runType: "subagent" },
     { inputProvenance: null }, { inputProvenance: { kind: "inter_session" } },
@@ -101,16 +101,61 @@ test("sender-bearing owner-private root contexts allow any channel without profi
   try { await h.ready(); } finally { h.close(); }
 });
 
-test("Control UI dashboard ingress without SenderId denies despite owner/private/profile authority", async () => {
-  // Captured ingress contract: gateway-client-identity-CZ8o5hJk.mjs:83-90
-  // sets direct/admin context but excludes SenderId for operator UI clients.
-  // get-reply-DFYHTxys.mjs:3554 -> agent-tools-DD0_71KJ.mjs:768 preserves absence.
-  const h = harness({ ctx: { requesterSenderId: undefined, requesterProfileId: "verified-profile" } });
-  try {
-    assert.match(text(await h.propose()), /unavailable/);
-    assert.match(text(await h.confirm("foreign")), /unavailable/);
-    assert.equal(h.calls.length, 0);
-  } finally { h.close(); }
+test("owner direct fallback accepts Telegram, dashboard without sender, and main sessions", async () => {
+  for (const sessionKey of ["agent:main:telegram:direct:123", owner.sessionKey, "agent:main:main"]) {
+    for (const requesterSenderId of [undefined, "", "owner"]) {
+      for (const requesterProfileId of [undefined, "", "verified-profile"]) {
+        const h = harness({ ctx: { sessionKey, requesterSenderId, requesterProfileId, memoryAudience: undefined, assertMemoryAudienceCurrent: undefined } });
+        try { const id = await h.ready(); assert.match(text(await h.confirm(id)), /committed/); assert.equal(h.calls.length, 2); } finally { h.close(); }
+      }
+    }
+  }
+});
+
+test("fallback denies non-owner, forwarded, non-private audience, and non-private root keys", async () => {
+  for (const bad of [
+    { senderIsOwner: false }, { senderIsOwner: undefined }, { memoryAudience: { kind: "conversation" } },
+    { memoryAudience: { kind: "unknown" } }, { messageProvenance: "forwarded" }, { forwarded: false },
+    ...["telegram:group:123", "telegram:channel:123", "subagent:child", "cron:job", "hook:direct:id", "inter-session:source", "inter-session:direct:source", "inter_session:direct:source", "unknown", "unknown:channel:id"].map((key) => ({ sessionKey: "agent:main:" + key })),
+  ]) {
+    const h = harness({ ctx: { memoryAudience: undefined, assertMemoryAudienceCurrent: undefined } });
+    try {
+      const id = await h.ready(); Object.assign(h.ctx, bad);
+      assert.match(text(await h.propose()), /unavailable/); assert.match(text(await h.confirm(id)), /unavailable/);
+      assert.equal(h.calls.length, 1);
+    } finally { h.close(); }
+  }
+});
+
+test("unknown channel sentinel denies proposal and confirmation with or without audience", async () => {
+  for (const audience of [undefined, { kind: "owner-private" }]) {
+    const h = harness({ ctx: { memoryAudience: audience } });
+    try {
+      const id = await h.ready();
+      h.ctx.sessionKey = "agent:main:unknown:direct:peer";
+      assert.match(text(await h.propose()), /unavailable/);
+      assert.match(text(await h.confirm(id)), /unavailable/);
+      assert.equal(h.calls.length, 1);
+    } finally { h.close(); }
+  }
+});
+
+test("draft identity binding uses sender then profile then session, without downgrade", async () => {
+  for (const initial of [
+    { requesterSenderId: undefined, requesterProfileId: "profile" },
+    { requesterSenderId: undefined, requesterProfileId: undefined },
+    { requesterSenderId: "owner", requesterProfileId: "profile" },
+  ]) {
+    for (const changed of [{ requesterSenderId: "new-sender" }, { requesterSenderId: undefined, requesterProfileId: "new-profile" }, { requesterSenderId: undefined, requesterProfileId: undefined }]) {
+      const h = harness({ ctx: initial });
+      try {
+        const id = await h.ready(); Object.assign(h.ctx, changed);
+        const unchanged = !initial.requesterSenderId && !initial.requesterProfileId && !changed.requesterSenderId && !changed.requesterProfileId;
+        assert.match(text(await h.confirm(id)), unchanged ? /committed/ : /unavailable/);
+        assert.equal(h.calls.length, unchanged ? 2 : 1);
+      } finally { h.close(); }
+    }
+  }
 });
 
 test("Telegram group audience and nonowner deny both tools", async () => {

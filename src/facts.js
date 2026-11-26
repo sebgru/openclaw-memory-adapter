@@ -39,25 +39,24 @@ export function createFacts(api, config) {
   let generation = 0;
   const enabled = config.enabled !== false && config.facts?.enabled === true;
   // All authorization fields are host tool-factory context, never tool arguments.
-  // The host-minted audience attests direct owner access; tool contexts do not
-  // project chatType or turn provenance. Optional contrary signals still deny.
+  // Prefer the host-minted audience. Without one, the host-generated root key
+  // and host-computed owner flag attest private access. Never trust tool args.
   const authorized = (ctx) => enabled && ctx.senderIsOwner === true &&
-    ctx.memoryAudience?.kind === "owner-private" &&
-    typeof ctx.assertMemoryAudienceCurrent === "function" &&
+    (ctx.memoryAudience === undefined || ctx.memoryAudience?.kind === "owner-private" &&
+      typeof ctx.assertMemoryAudienceCurrent === "function") &&
     [ctx.trigger, ctx.runKind, ctx.runType].every((kind) => kind === undefined || kind === "user") &&
     (ctx.chatType === undefined || ctx.chatType === "direct") &&
     (ctx.inputProvenance === undefined || ctx.inputProvenance?.kind === "external_user" && ctx.inputProvenance.sourceRole === undefined) &&
     ctx.oneShotCliRun !== true && !ctx.memoryFlush &&
     typeof ctx.sessionId === "string" && !!ctx.sessionId &&
-    typeof ctx.requesterSenderId === "string" && !!ctx.requesterSenderId &&
     typeof ctx.sessionKey === "string" &&
-    /^agent:[^:]+:(?:main|dashboard:[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}|(?!(?:cron|hook|heartbeat|subagent|dashboard|main|direct):)[a-z][a-z0-9_-]*:direct:[^:]+)$/u.test(ctx.sessionKey) &&
+    /^agent:[^:]+:(?:main|dashboard:[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}|(?!(?:cron|hook|heartbeat|subagent|inter-session|inter_session|unknown|dashboard|main|direct):)[a-z][a-z0-9_-]*:direct:[^:]+)$/u.test(ctx.sessionKey) &&
     ctx.messageProvenance !== "forwarded" &&
     !Object.keys(ctx).some((key) => (key === "forward_origin" || key === "forwarded" || /^(?:Forwarded|ReplyToForwarded)/u.test(key)) && ctx[key] !== undefined);
   function guard(ctx) {
     ctx.assertInvocationCurrent?.();
     if (!authorized(ctx)) throw new Error("unauthorized facts");
-    ctx.assertMemoryAudienceCurrent();
+    if (ctx.memoryAudience !== undefined) ctx.assertMemoryAudienceCurrent();
     if (!authorized(ctx)) throw new Error("unauthorized facts");
   }
   async function request(path, body, check) {
@@ -78,8 +77,10 @@ export function createFacts(api, config) {
     return result;
   }
   const reply = (text) => ({ content: [{ type: "text", text }] });
+  const identity = (ctx) => ctx.requesterSenderId ? ["sender", ctx.requesterSenderId] :
+    ctx.requesterProfileId ? ["profile", ctx.requesterProfileId] : ["session", undefined];
   const bound = (draft, ctx) => draft.session === ctx.sessionKey && draft.incarnation === ctx.sessionId &&
-    draft.sender === ctx.requesterSenderId;
+    draft.identityKind === identity(ctx)[0] && draft.identityId === identity(ctx)[1];
   function prune() {
     for (const [id, draft] of pending) if (draft.expires <= Date.now()) pending.delete(id);
   }
@@ -132,7 +133,7 @@ export function createFacts(api, config) {
             valid_from: draft.valid_from, valid_to: draft.valid_to ?? null, item_key: draft.item_key ?? null, targets,
           }) + " Reply yes to confirm within five minutes. Curated files unchanged; forget does not erase backups or chat copies.";
           pending.set(draft.draft_id, { action: draft.action, session: ctx.sessionKey, incarnation: ctx.sessionId,
-            sender: ctx.requesterSenderId, profile: ctx.requesterProfileId, // Optional metadata, not authority or binding.
+            identityKind: identity(ctx)[0], identityId: identity(ctx)[1],
             expires: Math.min(Date.parse(draft.expires_at), Date.now() + 300000) });
           return reply(readback);
         } catch {
