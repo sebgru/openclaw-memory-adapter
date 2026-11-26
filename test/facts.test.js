@@ -259,7 +259,7 @@ test("transport secret endpoint HTTP JSON failures redacted, never acknowledge s
       if (failure === "http") globalThis.fetch = async () => ({ ok: false });
       if (failure === "json") globalThis.fetch = async () => ({ ok: true, json() { throw Error("PRIVATE FACT"); } });
       if (failure === "transport") globalThis.fetch = async () => { throw Error("PRIVATE FACT"); };
-      const result = text(await h.propose()); assert.match(result, /unavailable/); assert.doesNotMatch(result, /PRIVATE FACT|synthetic-test-only/); assert.deepEqual(h.logs, []);
+      const result = text(await h.propose()); assert.match(result, /unavailable/); assert.doesNotMatch(result, /PRIVATE FACT|synthetic-test-only/); assert.equal(h.logs.length, 1); assert.match(h.logs[0], /stage=propose reason=[A-Z_]+ hints=/); assert.doesNotMatch(h.logs.join(""), /PRIVATE FACT|synthetic-test-only|http:\/\//);
     } finally { h.close(); }
   }
   for (const bad of ["http", "shape"]) {
@@ -323,7 +323,9 @@ test("automatic current slice uses concrete backend slots; malformed or failed l
     try {
       if (failure === "transport") globalThis.fetch = async () => { throw Error("PRIVATE FACT"); };
       assert.equal(await h.facts.current(h.ctx), UNAVAILABLE);
-      assert.deepEqual(h.logs, []);
+      assert.equal(h.logs.length, 1);
+      assert.match(h.logs[0], /stage=hook-current reason=(?:STATE_SHAPE|UNKNOWN) hints=/);
+      assert.doesNotMatch(h.logs.join(""), /PRIVATE FACT/);
     } finally { h.close(); }
   }
   const h = harness();
@@ -392,7 +394,8 @@ test("both recall paths deny non-owner, non-private, automation and non-root con
       const result = await h.hooks.before_prompt_build({ prompt: "language?" }, h.ctx);
       if (result) assert.match(result.prependContext, /Current facts unavailable/);
       assert.equal(h.calls.some(({ url }) => url.includes("/facts/") || url.includes("fact_subject=")), false);
-      assert.deepEqual(h.logs, []);
+      assert.ok(h.logs.length >= 1);
+      assert.ok(h.logs.every((line) => /^memory-adapter: facts unavailable stage=(?:tool-recall|hook-current) reason=[A-Z_]+ hints=/.test(line)));
     } finally { h.close(); }
   }
 });
@@ -404,7 +407,9 @@ test("absent-audience backend failure is unavailable in both recall paths, not a
     const result = await h.hooks.before_prompt_build({ prompt: "language?" }, h.ctx);
     assert.match(result.prependContext, /Current facts unavailable/);
     assert.doesNotMatch(result.prependContext, /not_found|PRIVATE FAILURE/);
-    assert.deepEqual(h.logs, ["memory-adapter: retrieval failed; details omitted"]);
+    assert.deepEqual(h.logs.filter((line) => !line.startsWith("memory-adapter: facts unavailable ")), ["memory-adapter: retrieval failed; details omitted"]);
+    assert.equal(h.logs.filter((line) => line.includes("reason=UNKNOWN")).length, 2);
+    assert.doesNotMatch(h.logs.join(""), /PRIVATE FAILURE/);
   } finally { h.close(); }
 });
 
