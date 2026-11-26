@@ -80,7 +80,7 @@ export default definePluginEntry({
     const facts = createFacts(api, config);
     api.on("before_prompt_build", async (event, ctx) => {
       if (!eligible(event, ctx, config)) return undefined;
-      const factNotice = facts.takeNotice(ctx);
+      const factNotice = config.facts?.enabled === true ? await facts.current(ctx) : undefined;
       const turnReceipts = config.turnReceipts === true;
       const scope = "all";
       const turnId = turnReceipts ? nextTurnId(event, ctx) : undefined;
@@ -230,7 +230,7 @@ export default definePluginEntry({
       description: "Search authoritative memory, output metadata, indexed documents, and the session archive through the external memory service.",
       parameters: UnifiedMemorySearchParameters,
       execute: async (_toolCallId, params) => {
-        if (params.fact_subject !== undefined || params.fact_predicate !== undefined) return facts.recall(ctx, params);
+        if (config.facts?.enabled === true || params.fact_subject !== undefined || params.fact_predicate !== undefined) return facts.recall(ctx, params);
         const scope = params.scope ?? config.scope ?? "all";
         const turnId = (typeof _toolCallId === "string" && _toolCallId.slice(0, 128)) || globalThis.crypto.randomUUID();
         const startedAt = Date.now();

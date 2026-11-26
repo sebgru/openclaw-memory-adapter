@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createFacts } from "../src/facts.js";
 
-const ctx = { sessionKey: "private", sessionId: "one", senderIsOwner: true, requesterSenderId: "owner", memoryAudience: { kind: "owner-private" } };
+const ctx = { sessionKey: "agent:main:dashboard:private", requesterProfileId: "profile", messageChannel: "webchat", sessionId: "one", senderIsOwner: true, requesterSenderId: "owner", memoryAudience: { kind: "owner-private" } };
 const params = { action: "add", subject: "person:owner", predicate: "pref.language", value: "English", value_type: "string", unit: null, valid_from: null, privacy_class: "shareable" };
 function fixture(config = {}) {
   const hooks = {}, factories = {}, calls = [];
@@ -16,107 +16,24 @@ function fixture(config = {}) {
     return { ok: true, json: async () => url.includes("/facts/drafts") ?
       { ...body, draft_id: "d_one", expires_at: new Date(Date.now() + 86400000).toISOString() } : { draft_id: "d_one", action: "add" } };
   };
-  const inbound = (content, event = {}, context = {}) => hooks.inbound_claim({ content, senderIsOwner: true, isGroup: false, timestamp: Date.now(), ...event }, { ...ctx, senderId: "owner", messageProvenance: "direct", messageId: content === "yes" ? "confirm" : "proposal", ...context });
-  const ready = async () => {
-    await inbound("remember this: English");
-    const result = await factories.memory_fact_draft(ctx).execute("call", params);
-    hooks.message_sent({ success: true, messageId: "shown", content: result.content[0].text }, ctx);
-  };
-  return { hooks, factories, facts, calls, inbound, ready, close() { globalThis.fetch = originalFetch; delete globalThis.__factsTestCredential; } };
+  const propose = (context = ctx, value = params) => factories.memory_fact_propose(context).execute("call", value);
+  const confirm = (id, context = ctx) => factories.memory_fact_confirm(context).execute("confirm", { draft_id: id });
+  return { hooks, factories, facts, calls, propose, confirm, close() { globalThis.fetch = originalFetch; delete globalThis.__factsTestCredential; } };
 }
 
-test("expiry and old session pruning forbid late confirmations and reuse", async () => {
-  const realNow = Date.now, h = fixture();
-  try {
-    await h.ready();
-    const future = realNow() + 86400001;
-    Date.now = () => future;
-    await h.inbound("yes", {}, { replyToId: "shown" });
-    assert.equal(h.calls.length, 1);
-    assert.equal(h.facts.takeNotice(ctx), undefined);
-  } finally { Date.now = realNow; h.close(); }
-});
-
-test("confirmation superseded during network request never acknowledges success", async () => {
+test("no fact cache: every recall checks authority and backend again", async () => {
   const h = fixture();
   try {
-    await h.ready();
-    globalThis.fetch = async () => {
-      await h.inbound("different topic");
-      return { ok: true, json: async () => ({ draft_id: "d_one", action: "add" }) };
-    };
-    await h.inbound("yes", {}, { replyToId: "shown" });
-    assert.match(h.facts.takeNotice(ctx), /unavailable/);
-  } finally { h.close(); }
-});
-
-test("session start/end/reset clear pending mappings; missing key is harmless", async () => {
-  for (const hook of ["session_start", "session_end", "before_reset"]) {
-    const h = fixture();
-    try {
-      await h.ready();
-      h.hooks[hook]({ sessionKey: "private" }, {});
-      await h.inbound("yes", {}, { replyToId: "shown" });
-      assert.equal(h.calls.length, 1);
-      h.hooks[hook]({}, ctx); h.hooks[hook]({}, {});
-    } finally { h.close(); }
-  }
-});
-
-test("stale capture, confirmation freshness, same-origin reply and expired in-flight draft fail closed", async () => {
-  const realNow = Date.now;
-  for (const mode of ["capture", "confirmation", "origin", "inflight"]) {
-    const h = fixture();
-    try {
-      const initial = realNow();
-      if (mode === "capture") {
-        await h.inbound("remember this: English");
-        Date.now = () => initial + 400000;
-        assert.match((await h.factories.memory_fact_draft(ctx).execute("call", params)).content[0].text, /unavailable/);
-        assert.equal(h.calls.length, 0);
-      } else {
-        await h.ready();
-        if (mode === "confirmation") Date.now = () => initial + 400000;
-        if (mode === "inflight") globalThis.fetch = async () => {
-          Date.now = () => initial + 86400001;
-          return { ok: true, json: async () => ({ draft_id: "d_one", action: "add" }) };
-        };
-        await h.inbound("yes", { timestamp: mode === "confirmation" ? initial + 1000 : realNow() }, { replyToId: "shown", ...(mode === "origin" ? { messageId: "proposal" } : {}) });
-        assert.equal(h.calls.length, 1);
-        if (mode === "inflight") assert.match(h.facts.takeNotice(ctx), /unavailable/);
-      }
-    } finally { Date.now = realNow; h.close(); }
-  }
-});
-
-test("no fact cache survives recall or forget; every recall rechecks authority and backend", async () => {
-  const h = fixture();
-  try {
-    await h.inbound("language?");
     let state = "resolved";
     globalThis.fetch = async () => ({ ok: true, json: async () => ({ current_state: [{ state }], results: [] }) });
-    const query = { query: "language", fact_subject: "person:owner", fact_predicate: "pref.language" };
-    assert.match((await h.facts.recall(ctx, query)).content[0].text, /resolved/);
+    assert.match((await h.facts.recall(ctx, { query: "language", fact_subject: "person:owner", fact_predicate: "pref.language" })).content[0].text, /resolved/);
     state = "not_found";
-    assert.match((await h.facts.recall(ctx, query)).content[0].text, /not_found/);
-    assert.match((await h.facts.recall({ ...ctx, senderIsOwner: false }, query)).content[0].text, /unavailable/);
+    assert.match((await h.facts.recall(ctx, { query: "language", fact_subject: "person:owner", fact_predicate: "pref.language" })).content[0].text, /not_found/);
+    assert.match((await h.facts.recall({ ...ctx, memoryAudience: undefined }, {})).content[0].text, /unavailable/);
   } finally { h.close(); }
 });
 
-test("capture revocation during request cannot install pending readback", async () => {
-  const h = fixture();
-  try {
-    await h.inbound("remember this: English");
-    globalThis.fetch = async (_url, init) => {
-      await h.inbound("another topic");
-      return { ok: true, json: async () => ({ ...JSON.parse(init.body), draft_id: "d", expires_at: new Date(Date.now() + 1000).toISOString() }) };
-    };
-    assert.match((await h.factories.memory_fact_draft(ctx).execute("call", params)).content[0].text, /unavailable/);
-  } finally { h.close(); }
-});
-
-
-test("forget revokes held draft responses in other sessions before they can bind or confirm", async () => {
+test("forget revokes held proposals from other sessions and clears pending drafts", async () => {
   const h = fixture();
   try {
     let release;
@@ -129,19 +46,24 @@ test("forget revokes held draft responses in other sessions before they can bind
         { ...body, draft_id: body.action, expires_at: new Date(Date.now() + 60000).toISOString() } :
         { draft_id: "retract", action: "retract" } };
     };
-    await h.inbound("remember this: English");
-    const old = h.factories.memory_fact_draft(ctx).execute("old", params);
-    const other = { ...ctx, sessionKey: "forget-session" };
-    await h.inbound("forget this", {}, { sessionKey: other.sessionKey });
-    const forget = await h.factories.memory_fact_draft(other).execute("forget", { ...params, action: "forget" });
-    h.hooks.message_sent({ success: true, messageId: "forget-shown", content: forget.content[0].text }, other);
-    await h.inbound("yes", {}, { sessionKey: other.sessionKey, replyToId: "forget-shown" });
-    assert.match(h.facts.takeNotice(other), /committed: retract/);
-    release();
-    const result = await old;
-    assert.match(result.content[0].text, /unavailable/);
-    h.hooks.message_sent({ success: true, messageId: "old-shown", content: result.content[0].text }, ctx);
-    await h.inbound("yes", {}, { replyToId: "old-shown" });
+    const old = h.propose();
+    const other = { ...ctx, sessionKey: "agent:main:dashboard:other" };
+    await h.propose(other, { ...params, action: "forget" });
+    assert.match((await h.confirm("retract", other)).content[0].text, /committed: retract/);
+    release(); assert.match((await old).content[0].text, /unavailable/);
+    assert.match((await h.confirm("add")).content[0].text, /unavailable/);
     assert.equal(h.calls.filter((url) => url.endsWith("/facts/confirm")).length, 1);
+  } finally { h.close(); }
+});
+
+test("concurrent confirmations consume locally once, even before backend responds", async () => {
+  const h = fixture();
+  try {
+    await h.propose(); let release;
+    globalThis.fetch = async () => new Promise((resolve) => { release = () => resolve({ ok: true, json: async () => ({ draft_id: "d_one", action: "add" }) }); });
+    const first = h.confirm("d_one");
+    assert.match((await h.confirm("d_one")).content[0].text, /unavailable/);
+    release(); assert.match((await first).content[0].text, /committed/);
+    h.hooks.before_reset({}, {});
   } finally { h.close(); }
 });

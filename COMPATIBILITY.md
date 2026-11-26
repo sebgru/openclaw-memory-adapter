@@ -15,45 +15,68 @@ Before a production upgrade:
 3. Verify WebChat and Telegram retrieval, timeout fallback, and service outage behavior.
 4. Record the result here and retain the previous OpenClaw image and adapter release.
 
-## D.3 fact lane (next minor; not installed or runtime-accepted here)
+## D.3 Option C (next minor; not installed or runtime-accepted)
 
-Legacy retrieval remains compatible with the prior plugin entry API. Enabling
-`facts.enabled` additionally requires all of these host contracts:
+No `inbound_claim`, `message_sent` or mandatory `messageProvenance` dependency.
+Capture and saving are separate `memory_fact_propose` / `memory_fact_confirm`
+tools. Both plus `unified_memory_search` are declared in `contracts.tools`.
+Feature default is off. `facts.bearerToken` is a capability-owned prepared
+SecretRef (`source: exec`, `provider: secretref`, `id: MEMORY_FACTS_WRITE_TOKEN`);
+missing secret fails closed. SDK export `openclaw/plugin-sdk/secret-input-runtime`
+and manifest `configContracts.secretInputs` must exist in the candidate image.
 
-- `inbound_claim`: host `senderIsOwner`, explicit `isGroup: false`, millisecond
-  provider timestamp, canonical `ctx.sessionKey`, `ctx.senderId`, `ctx.messageId`,
-  native `ctx.replyToId`; edits/quoted replies must be signalled.
-  **Additionally required, not provided by the inspected native host:** trusted
-  `ctx.messageProvenance: "direct"`, attesting original nonforwarded input.
-  Missing/unknown/forwarded provenance fails closed on capture, confirmation and
-  fact recall. This is a future host contract requirement, not a claim of current
-  native support or a user/model-settable option. Merely enabling the flag on
-  the inspected host cannot enable capture.
-- `message_sent`: successful delivery with canonical session, complete exact
-  content and actual provider message ID. Missing WebChat/channel delivery
-  support is fail-closed, **not** a simulated successful binding.
-- Tool factory host `senderIsOwner`, `requesterSenderId`, `sessionId`,
-  `memoryAudience.kind: "owner-private"` and canonical `sessionKey`.
-- `session_start`, `session_end`, `before_reset` invalidate pending mappings.
-- Public SDK `openclaw/plugin-sdk/secret-input-runtime` export
-  `getPreparedPluginSecretInput`, plus manifest `configContracts.secretInputs`
-  startup materialization and capability-owned fail-cold isolation.
-- Manifest `contracts.tools` must declare both `unified_memory_search` and
-  `memory_fact_draft`; entry-definition properties are not manifest authority. Source config
-  must accept the SecretRef schema while runtime values are resolved strings.
+### Inspected host fields (local OpenClaw 2026.11.4, not upstream guarantees)
 
-These interfaces were inspected in the locally available OpenClaw 2026.11.4 SDK,
-manifest documentation and source contract snapshots. This is **not** a live
-end-to-end channel compatibility certification or a minimum-version guarantee.
-Older hosts lacking the SDK subpath cannot load this candidate; do not install
-without the candidate-image check. Test both WebChat and Telegram delivery/reply
-metadata before enabling capture. Unsupported routes remain unavailable.
-Backend requirement: memory-sebg v1.24.0, `/facts/drafts`, `/facts/confirm`,
-`/facts/current` and optional authenticated `/unified/search` `current_state`.
-`end`/`retract`/`forget` are drafts, not direct writes. Exact SecretRef enablement
-configuration and rollout/retention caveats are in README.md.
+- `/app/dist/openclaw-tools-BcYM16A_.mjs:549` builds tool context; lines 570–580
+  project message channel, delivery context, requester sender/profile, owner,
+  prepared memory audience/currentness and conversation read policy. There is no
+  direct `ChatType`, spawned-by, run-kind or current input provenance field here.
+- `/app/dist/requester-profile-u6QLGOHK.mjs:2` defines the host-only Symbol/private
+  carrier; lines 19–22 check channel/sender binding and live profile currency.
+  `/app/dist/chat-send-handler-Duf_7dlJ.mjs:2461` binds it only for authenticated
+  browser UI callers, excluding synthetic clients and nonexternal input provenance.
+  `/app/dist/agent-runner-utils-FzOMyVwy.mjs:219` reads that carrier;
+  `/app/dist/agent-tools-DD0_71KJ.mjs:769` forwards its id into tool context.
+  JSON/text/model parameters cannot mint this carrier.
+- `memoryAudience` is prepared and session-bound, checked by
+  `/app/dist/memory-audience-FSMgkUKT.mjs:178`. Root direct owner-private access
+  is decided at lines 134–157 but inherited down spawned-by lineage: **audience
+  alone is not write authority**. Group roots do not qualify. Combine it with
+  owner, browser-only current profile, webchat channel, ordinary root session-key
+  allowlist, sender and incarnation; unknown/missing fields deny writes.
+- `conversationReadOrigin` (`/app/dist/conversation-read-origin-E3olMOwo.mjs:2`)
+  is a read policy label, defaults to delegated and is not a human-input test.
+  We do not use it or infer directness from `isGroup: false`.
+- Subagent/cron session keys are outside the allowed root/main/dashboard shapes.
+  Cron/heartbeat/inter-session continuations of a root do not carry a freshly bound
+  browser profile. This restriction depends on the inspected local requester-profile
+  producer, not names/roles in prompts. Telegram has no such projected profile and
+  fails closed for writes. Do not invent missing tool-context fields in config.
+- `session_start`, `session_end`, `before_reset` invalidate pending drafts and
+  in-flight operations. Current invocation and audience guards are used when provided.
 
-Validation: isolated synthetic HTTP mocks only; no live facts were read/written.
-No automatic personal-profile injection, cross-session/fork migration or generic
-secret-detection completeness is claimed. Keep the feature off pending the
-operator's per-channel acceptance and separate merge/release/install/restart.
+### Weaker consent contract and residual risk
+
+The agent, not an inbound hook, interprets “yes”. It must display the question and
+wait for affirmative owner input in a later turn. The adapter cannot prove delivery,
+new-turn timing or semantic consent, and cannot detect forwarded messages with the
+current projected fields. An agent can wrongly call confirm immediately or mistake
+forwarded/quoted text for consent. This is the explicitly chosen Option C residual
+risk, **not** transport-attested human authorization. Optional future host
+`messageProvenance: "forwarded"` denies operations. Missing provenance is allowed.
+
+Draft ids bind to session/incarnation/sender/profile for at most five minutes;
+replays, expired and foreign ids fail locally. Backend session references use
+separate random proposal/confirmation operation ids (agent assertions, not native
+message ids). Confirmation consumes before request; uncertain outcomes require a
+new draft, never a retry. End/retract/forget are drafts, not direct writes.
+
+Backend: memory-sebg v1.24.0 `/facts/drafts`, `/facts/confirm`, `/facts/current`
+and authenticated `/unified/search` explicit `fact_subject`/`fact_predicate`.
+Automatic recall must query concrete slots: the bounded 18-predicate unkeyed
+`person:owner` slice is not complete enumeration of all subjects/keyed set facts.
+See README for limitations, exact config and owner acceptance steps.
+
+Validation is synthetic HTTP mocks and source inspection only; no live facts read
+or write, runtime install or per-channel acceptance. Keep disabled until the owner
+merges/releases/installs and performs candidate-host and private WebChat acceptance.

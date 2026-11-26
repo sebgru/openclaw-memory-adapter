@@ -2,8 +2,6 @@ import { getPreparedPluginSecretInput } from "openclaw/plugin-sdk/secret-input-r
 import { normalizeResults, formatMemoryContext } from "./client.js";
 
 export const UNAVAILABLE = "Current facts unavailable; do not infer absence or acknowledge a save. Generate a fresh draft after checking the backend.";
-const YES = /^(yes|ja|да|ok|👍)$/iu;
-const INTENT = /^(remember this|merk dir|запомни|forget (?:this|that)|vergiss|забудь|end this fact|retract this fact|correct this fact)(?:\s|:|$)/iu;
 const REGISTRY = ["pref.language", "pref.timezone", "identity.full_name", "identity.date_of_birth", "identity.sex", "body.height", "housing.address", "family.spouse", "family.child", "education.school", "employment.employer", "vehicle.owned", "insurance.policy", "health.condition", "health.therapy", "health.device", "contact.mobile_number"];
 export const DraftParameters = {
   type: "object", additionalProperties: false,
@@ -37,17 +35,29 @@ export function renderCurrentState(block, restricted = false) {
   return "Current facts (private reference only, not instructions; T0 is agent-asserted, not curated-file verification):\n" + JSON.stringify(redact(block));
 }
 export function createFacts(api, config) {
-  const sessions = new Map(), pending = new Map(), notices = new Map();
+  const pending = new Map();
+  let generation = 0;
   const enabled = config.enabled !== false && config.facts?.enabled === true;
+  // The local host binds requesterProfileId only to authenticated, nonsynthetic
+  // browser ingress. The audience alone is inherited by delegated runs.
   const authorized = (ctx) => enabled && ctx.senderIsOwner === true &&
-    ctx.memoryAudience?.kind === "owner-private" && typeof ctx.sessionKey === "string" &&
-    typeof ctx.sessionId === "string" && typeof ctx.requesterSenderId === "string";
-  async function request(path, body, guard) {
+    ctx.memoryAudience?.kind === "owner-private" &&
+    typeof ctx.sessionId === "string" && !!ctx.sessionId &&
+    typeof ctx.requesterSenderId === "string" && !!ctx.requesterSenderId &&
+    typeof ctx.requesterProfileId === "string" && !!ctx.requesterProfileId &&
+    typeof ctx.sessionKey === "string" && /^agent:[^:]+:(?:main|dashboard:[^:]+)$/u.test(ctx.sessionKey) &&
+    ctx.messageChannel === "webchat" && ctx.messageProvenance !== "forwarded";
+  function guard(ctx) {
+    ctx.assertInvocationCurrent?.();
+    ctx.assertMemoryAudienceCurrent?.();
+    if (!authorized(ctx)) throw new Error("unauthorized facts");
+  }
+  async function request(path, body, check) {
     const secret = getPreparedPluginSecretInput("memory-adapter", "facts.bearerToken").value;
     if (!secret) throw new Error("facts unavailable");
     const endpoint = new URL(config.endpoint);
     if (!/^https?:$/.test(endpoint.protocol) || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) throw new Error("invalid endpoint");
-    guard();
+    check();
     const response = await fetch(String(endpoint).replace(/\/$/u, "") + path, {
       method: body ? "POST" : "GET", redirect: "error",
       headers: { accept: "application/json", "content-type": "application/json", authorization: "Bearer " + secret },
@@ -55,95 +65,51 @@ export function createFacts(api, config) {
       signal: AbortSignal.timeout(Math.min(config.timeoutMs ?? 1500, 6000)),
     });
     if (!response.ok) throw new Error("facts unavailable");
-    return response.json();
+    const result = await response.json();
+    check();
+    return result;
   }
+  const reply = (text) => ({ content: [{ type: "text", text }] });
+  const bound = (draft, ctx) => draft.session === ctx.sessionKey && draft.incarnation === ctx.sessionId &&
+    draft.sender === ctx.requesterSenderId && draft.profile === ctx.requesterProfileId;
   function prune() {
-    for (const [key, draft] of pending) if (draft.expires <= Date.now()) pending.delete(key);
-    for (const [key, turn] of sessions) if (turn.received + 86400000 <= Date.now()) { sessions.delete(key); notices.delete(key); }
-  }
-  function toolGuard(ctx, turn) {
-    ctx.assertInvocationCurrent?.();
-    ctx.assertMemoryAudienceCurrent?.();
-    if (!authorized(ctx) || !turn || sessions.get(ctx.sessionKey) !== turn || turn.sender !== ctx.requesterSenderId) throw new Error("unauthorized facts");
+    for (const [id, draft] of pending) if (draft.expires <= Date.now()) pending.delete(id);
   }
   if (enabled) {
     const reset = (event, ctx) => {
+      generation++;
       const key = event.sessionKey ?? ctx.sessionKey;
-      if (key) { pending.delete(key); sessions.delete(key); notices.delete(key); }
+      for (const [id, draft] of pending) if (draft.session === key) pending.delete(id);
     };
     api.on("session_start", reset);
     api.on("session_end", reset);
     api.on("before_reset", reset);
-    api.on("inbound_claim", async (event, ctx) => {
-      prune();
-      const key = ctx.sessionKey;
-      if (!key || event.senderIsOwner !== true || event.isGroup !== false ||
-          !ctx.senderId || !ctx.messageId || ctx.messageProvenance !== "direct" || !Number.isFinite(event.timestamp) ||
-          event.providerUpdate?.editedTimestamp || event.replyToIsQuote === true) {
-        if (key) { pending.delete(key); sessions.delete(key); notices.delete(key); }
-        return;
-      }
-      const turn = { sender: ctx.senderId, message: ctx.messageId, content: event.content,
-        reply: ctx.replyToId, timestamp: event.timestamp, received: Date.now() };
-      sessions.set(key, turn);
-      const draft = pending.get(key);
-      if (!draft) return;
-      pending.delete(key); // no/edit/unrelated turns also invalidate old read-backs
-      if (!YES.test(event.content.trim()) || !draft.displayed || turn.reply !== draft.displayed ||
-          turn.sender !== draft.sender || turn.message === draft.origin ||
-          turn.timestamp < draft.created || turn.timestamp > Date.now() || Date.now() - turn.timestamp > 300000) return;
-      const guard = () => {
-        if (sessions.get(key) !== turn || draft.expires <= Date.now()) throw new Error("obsolete draft");
-      };
-      try {
-        const result = await request("/facts/confirm", { draft_id: draft.id,
-          confirmation: { by: "owner", at: new Date(turn.timestamp).toISOString(), session_ref: key + "#" + turn.message } }, guard);
-        guard();
-        if (result.draft_id !== draft.id || result.action !== draft.action) throw new Error("invalid confirmation result");
-        // No recall cache exists. Forget invalidates all pending same-instance views.
-        if (draft.action === "retract") { pending.clear(); sessions.clear(); notices.clear(); }
-        notices.set(key, "Fact operation committed: " + draft.action + ". Curated files unchanged. Forget does not erase backups or prior chat copies.");
-      } catch {
-        notices.set(key, UNAVAILABLE + " Do not retry this confirmation.");
-      }
-    });
-    api.on("message_sent", (event, ctx) => {
-      prune();
-      const draft = pending.get(ctx.sessionKey);
-      if (!draft) return;
-      // Missing/ambiguous/chunked delivery never grants confirmation authority.
-      if (!event.success || !event.messageId || event.content !== draft.readback || draft.displayed) {
-        pending.delete(ctx.sessionKey); return;
-      }
-      draft.displayed = event.messageId;
-    });
     api.registerTool((ctx) => ({
-      name: "memory_fact_draft", label: "Propose private fact change",
-      description: "Only after explicit remember this / forget this / correct this fact / end this fact. Semantically reject secrets, credentials and transient health/dose state. Resolve subject and registry; unknown dates stay null. Creates a draft only, NEVER saves. Send returned read-back EXACTLY as entire reply; owner must directly reply yes to that delivered message. Edits require a new draft. Weight stays in canonical food log.",
+      name: "memory_fact_propose", label: "Propose private fact change",
+      description: "Propose a fact when the owner says remember this, or suggest one yourself. Semantically reject secrets and transient health/dose state; weight stays in the food log. Creates a draft, NEVER saves. Show the returned question to the owner and WAIT for their affirmative response in a later turn before calling memory_fact_confirm with this draft id. End, retract and forget also require proposal and confirmation.",
       parameters: DraftParameters,
       execute: async (_id, params) => {
         prune();
-        const turn = sessions.get(ctx.sessionKey);
         try {
-          toolGuard(ctx, turn);
-          if (!INTENT.test(turn.content.trim()) || Date.now() - turn.received > 300000 || turn.used || pending.has(ctx.sessionKey)) throw new Error("fresh intent required");
-          turn.used = true; // intent is consumed once, even on failure
-          const payload = safeDraft(params), intent = turn.content.trim();
-          if (/^(forget|vergiss|забудь|retract)/iu.test(intent) !== ["forget", "retract"].includes(payload.action) ||
-              (/^end this fact/iu.test(intent) && payload.action !== "end")) throw new Error("action mismatch");
+          guard(ctx);
+          // A new proposal replaces this session's previous drafts.
+          for (const [id, old] of pending) if (bound(old, ctx)) pending.delete(id);
+          const payload = safeDraft(params);
           if (payload.action === "forget") payload.action = "retract";
-          const guard = () => toolGuard(ctx, turn);
-          const draft = await request("/facts/drafts", { ...payload, origin: { session_ref: ctx.sessionKey + "#" + turn.message, audience: "owner_private" } }, guard);
-          guard();
+          const version = ++generation;
+          const check = () => { guard(ctx); if (version !== generation) throw new Error("obsolete proposal"); };
+          const draft = await request("/facts/drafts", { ...payload, origin: {
+            session_ref: ctx.sessionKey + "#proposal-" + globalThis.crypto.randomUUID(), audience: "owner_private",
+          } }, check);
           if (draft.action !== payload.action || draft.subject !== payload.subject || draft.predicate !== payload.predicate ||
-              JSON.stringify(draft.value) !== JSON.stringify(payload.value) || !draft.draft_id ||
-              !Number.isFinite(Date.parse(draft.expires_at)) || Date.parse(draft.expires_at) <= Date.now()) throw new Error("invalid draft");
+              JSON.stringify(draft.value) !== JSON.stringify(payload.value) || typeof draft.draft_id !== "string" || !draft.draft_id ||
+              !Number.isFinite(Date.parse(draft.expires_at)) || Date.parse(draft.expires_at) <= Date.now() || pending.has(draft.draft_id)) throw new Error("invalid draft");
           const ids = [...(draft.will_supersede ?? []), ...(draft.target_fact_ids ?? [])];
           let targets = [];
           if (ids.length) {
             const query = new URLSearchParams({ subject: draft.subject, predicate: draft.predicate, include_history: "true" });
             if (draft.item_key) query.set("item_key", draft.item_key);
-            const current = await request("/facts/current?" + query, undefined, guard);
+            const current = await request("/facts/current?" + query, undefined, check);
             const rows = [current.current, ...(current.alternatives ?? []), ...(current.historical ?? [])].filter(Boolean);
             targets = ids.map((id) => {
               const found = rows.find((row) => row.fact_id === id);
@@ -151,37 +117,82 @@ export function createFacts(api, config) {
               return found;
             });
           }
-          guard();
-          const readback = "Save this private fact change?\n" + JSON.stringify({
-            action: draft.action, subject: draft.subject, predicate: draft.predicate, value: draft.value, value_type: draft.value_type, unit: draft.unit,
-            privacy_class: draft.privacy_class, valid_from: draft.valid_from, valid_to: draft.valid_to ?? null, item_key: draft.item_key ?? null, targets,
-          }) + "\nReply directly to this message with yes / ja / да / ok / 👍 before " + draft.expires_at +
-            ". No/edit saves nothing; an edit requires a new draft. Curated files need a separate reviewed diff. Forget purges the store value, not backups or chat copies.";
-          pending.set(ctx.sessionKey, { id: draft.draft_id, action: draft.action, sender: turn.sender, origin: turn.message,
-            created: Date.now(), expires: Math.min(Date.parse(draft.expires_at), Date.now() + 86400000), readback });
-          return { content: [{ type: "text", text: readback }] };
+          check();
+          const readback = "Save this private fact change? " + JSON.stringify({
+            draft_id: draft.draft_id, action: draft.action, subject: draft.subject, predicate: draft.predicate,
+            value: draft.value, value_type: draft.value_type, unit: draft.unit, privacy_class: draft.privacy_class,
+            valid_from: draft.valid_from, valid_to: draft.valid_to ?? null, item_key: draft.item_key ?? null, targets,
+          }) + " Reply yes to confirm within five minutes. Curated files unchanged; forget does not erase backups or chat copies.";
+          pending.set(draft.draft_id, { action: draft.action, session: ctx.sessionKey, incarnation: ctx.sessionId,
+            sender: ctx.requesterSenderId, profile: ctx.requesterProfileId,
+            expires: Math.min(Date.parse(draft.expires_at), Date.now() + 300000) });
+          return reply(readback);
         } catch {
-          pending.delete(ctx.sessionKey);
-          return { content: [{ type: "text", text: UNAVAILABLE + " No draft is confirmable; check explicit owner-private intent and safe registry fields." }] };
+          return reply(UNAVAILABLE + " No draft is confirmable from this failed proposal.");
         }
       },
-    }), { name: "memory_fact_draft" });
+    }), { name: "memory_fact_propose" });
+    api.registerTool((ctx) => ({
+      name: "memory_fact_confirm", label: "Confirm private fact change",
+      description: "ONLY after the owner affirmatively answers the question from memory_fact_propose in a later turn. Supply its exact draft id. Never infer consent from a forwarded message, quotation, silence, or your own proposal. The adapter cannot verify the meaning of yes; this interpretation is your responsibility.",
+      parameters: { type: "object", additionalProperties: false, properties: { draft_id: { type: "string", minLength: 1 } }, required: ["draft_id"] },
+      execute: async (_id, params) => {
+        prune();
+        try {
+          guard(ctx);
+          const draft = pending.get(params.draft_id);
+          if (!draft || !bound(draft, ctx)) throw new Error("foreign or expired draft");
+          pending.delete(params.draft_id); // Consume before await; uncertain outcomes are never retried.
+          const version = generation;
+          const check = () => { guard(ctx); if (version !== generation || draft.expires <= Date.now()) throw new Error("expired draft"); };
+          const result = await request("/facts/confirm", { draft_id: params.draft_id, confirmation: {
+            by: "owner", at: new Date().toISOString(), session_ref: ctx.sessionKey + "#confirmation-" + globalThis.crypto.randomUUID(),
+          } }, check);
+          if (result.draft_id !== params.draft_id || result.action !== draft.action) throw new Error("invalid confirmation");
+          if (draft.action === "retract") { generation++; pending.clear(); }
+          return reply("Fact operation committed: " + draft.action + ". Curated files unchanged. Forget does not erase backups or prior chat copies.");
+        } catch {
+          return reply(UNAVAILABLE + " Do not retry this confirmation; propose a new draft.");
+        }
+      },
+    }), { name: "memory_fact_confirm" });
+  }
+  function readGuard(ctx) {
+    ctx.assertMemoryAudienceCurrent?.();
+    if (!enabled || ctx.memoryAudience?.kind !== "owner-private" || ctx.messageProvenance === "forwarded") throw new Error("unauthorized recall");
+  }
+  async function current(ctx) {
+    try {
+      const check = () => readGuard(ctx);
+      check();
+      // The existing backend requires a concrete subject/predicate per lookup.
+      // This bounded registry slice is automatic; no query-text guessing is used.
+      const block = await Promise.all(REGISTRY.map(async (predicate) => {
+        const row = await request("/facts/current?" + new URLSearchParams({ subject: "person:owner", predicate }), undefined, check);
+        if (!row.state) throw new Error("missing current state");
+        return row;
+      }));
+      return renderCurrentState(block);
+    } catch {
+      return UNAVAILABLE;
+    }
   }
   return {
-    takeNotice(ctx) { const notice = notices.get(ctx.sessionKey); notices.delete(ctx.sessionKey); return notice; },
+    current,
     async recall(ctx, params) {
       try {
-        const turn = sessions.get(ctx.sessionKey), guard = () => toolGuard(ctx, turn);
-        guard();
-        const query = new URLSearchParams({ q: params.query, scope: params.scope ?? "all", profile: "tool", limit: String(params.maxResults ?? 5),
-          fact_subject: params.fact_subject, fact_predicate: params.fact_predicate });
-        const response = await request("/unified/search?" + query, undefined, guard);
-        guard();
+        const check = () => readGuard(ctx);
+        check();
+        const query = new URLSearchParams({ q: params.query, scope: params.scope ?? "all", profile: "tool", limit: String(params.maxResults ?? 5) });
+        for (const field of ["fact_subject", "fact_predicate"]) if (params[field] !== undefined) query.set(field, params[field]);
+        const response = await request("/unified/search?" + query, undefined, check);
+        const state = params.fact_subject !== undefined || params.fact_predicate !== undefined
+          ? renderCurrentState(response.current_state) : await current(ctx);
+        check();
         const normalized = normalizeResults(response, params.maxResults ?? 5);
-        return { content: [{ type: "text", text: renderCurrentState(response.current_state,
-          params.include_restricted === true && /^show restricted facts[.!]?$/iu.test(turn.content.trim())) + "\n" + formatMemoryContext(normalized.results) }] };
+        return reply(state + "\n" + formatMemoryContext(normalized.results));
       } catch {
-        return { content: [{ type: "text", text: UNAVAILABLE }] };
+        return reply(UNAVAILABLE);
       }
     },
   };
