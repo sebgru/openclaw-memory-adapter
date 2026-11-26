@@ -27,60 +27,97 @@ and manifest `configContracts.secretInputs` must exist in the candidate image.
 
 ### Telegram and WebChat host-context contract (2026-11-26)
 
-Both channels use the same gates; `requesterProfileId` is optional metadata only.
-Require host owner authorization, prepared owner-private audience, explicit direct
-chat type, ordinary root/main/dashboard or direct-channel session, and current
-external-user run context (`trigger: "user"`, `inputProvenance.kind:
-"external_user"`, no `sourceRole`). Unknown type/origin denies. These are
-**required adapter contracts, not invented claims about current host fields**.
+Both channels (and other channels) use the same host-projected gates:
+`senderIsOwner === true`, `memoryAudience.kind === "owner-private"`, required
+callable `assertMemoryAudienceCurrent`, nonempty sender/incarnation, and only root
+`agent:<id>:main`, `agent:<id>:dashboard:<uuid>` or
+`agent:<id>:<channel>:direct:<peer>` keys. Reserved automation channel names and
+all other shapes deny. `requesterProfileId` is optional metadata only. Optional
+`trigger`, `runKind`, `runType`, `inputProvenance`, `chatType`, one-shot and flush
+signals deny when contrary; absent unprojected fields do not block writes.
 
 Installed local OpenClaw 2026.11.4 source evidence (not upstream guarantees):
 
-- Telegram produces `conversation.kind` as `"group"` or `"direct"` at
-  `/app/dist/bot-message-HYWIRx8p.mjs:934`, passes it at line 1005;
-  `/app/dist/context-B_k_S6nC.mjs:181` maps it to `ChatType`.
-  `/app/dist/agent-runner-utils-FzOMyVwy.mjs:204` maps `ChatType` to runtime
-  `chatType`. **It is absent** from the complete public tool-factory context
-  `/app/dist/openclaw-tools-BcYM16A_.mjs:550` (object ends at line 582).
-- Host authorization matches sender candidates to owner allowlists at
-  `/app/dist/command-auth-DPD2ejxk.mjs:422`, computes `senderIsOwner` at line 445.
-  `/app/dist/get-reply-DFYHTxys.mjs:3559` puts it in the ordinary reply run;
-  `/app/dist/agent-runner-run-params-BJ1Xjo0R.mjs:174` carries it to runtime;
-  `/app/dist/agent-tools-DD0_71KJ.mjs:760` spreads runtime options;
-  `/app/dist/openclaw-tools-BcYM16A_.mjs:575` projects `senderIsOwner` to tools.
-  Thus Telegram's host-computed owner boolean has a real delivery path, not a
-  text-derived claim. Allowlisted command authorization alone is not ownership.
-- `trigger` and `inputProvenance` exist on the separate prompt-hook context at
-  `/app/dist/hook-context-CrfJ-FCU.mjs:26`, but **neither is projected** in that
-  tool-factory object. Root session keys alone cannot exclude automated root
-  continuations. Do not remove the run-context gate to work around this gap.
-- Direct-session key shapes come from
-  `/app/dist/session-key-CSDERtm3.mjs:484`: main (line 506), per-peer (505),
-  per-channel-peer (503), per-account-channel-peer (499). Adapter accepts only
-  supported WebChat/Telegram channel shapes plus root main/dashboard and direct.
-- Prepared audience checks `/app/dist/memory-audience-FSMgkUKT.mjs:178` remain;
-  owner-private audience is inherited by spawned descendants (lines 134–157),
-  so it alone is not write authority. Do not infer directness from `isGroup: false`.
-- Requester-profile carrier `/app/dist/requester-profile-u6QLGOHK.mjs:2` and its
-  WebChat-only producer `/app/dist/chat-send-handler-Duf_7dlJ.mjs:2461` are no
-  longer required for either channel. Profile changes do not break draft binding.
-- Native forwarding starts at `/app/dist/helpers-DZ2foAlJ.mjs:461` and visible
-  `ForwardedFrom` fields at `/app/dist/inbound-context-DnPzLOsP.mjs:35`; absent
-  from public tool context. Any projected forwarding signal denies writes.
-- Session lifecycle/reset invalidates drafts; invocation and audience currency
-  guards run when provided. One-shot CLI and memory-flush runs deny.
+- **Projection:** `/app/dist/openclaw-tools-BcYM16A_.mjs:549-582` carries
+  session key/id (558-559), message channel (569), sender id (573), optional local
+  profile patch (574), owner (575), audience (576), flush (577), audience currency
+  closure (578) and one-shot flag (581). No chatType/trigger/inputProvenance.
+  Audience session binding is asserted first at line 528.
+- **Audience producer:** `/app/dist/memory-audience-FSMgkUKT.mjs:90` resolves the
+  admitted entry and leases its generation. Lines 151-156 mint **owner-private**
+  iff durable `entry.chatType === "direct"` and sender owner is true. Lines
+  159-166 mint **conversation** for other direct/group/channel entries; that value
+  is denied by fact writes. Malformed/unverified/typeless sessions deny rather
+  than mint owner-private. Descendant inheritance at 134-147 means audience alone
+  cannot authorize writes: root-key screening is also mandatory. Currency uses
+  host WeakMap records and generation leases (53-68, 256-259).
+- **Both paths to audience:** `/app/dist/embedded-agent-D4DueR1g.mjs:4514-4536`
+  accepts only an existing host-minted session-bound audience or invokes that
+  producer using admitted session entry, id, key and `senderIsOwner`. Fresh
+  resolution requires the native memory provider and session admission (4523).
+  The attempt passes the result at 4861-4870 and 4916. Runtime options reach
+  tool construction via `/app/dist/agent-tools-DD0_71KJ.mjs:760` (`...options`).
+- **Telegram owner/direct:** `/app/dist/bot-message-HYWIRx8p.mjs:934` chooses
+  group/direct and line 1005 passes it to inbound context;
+  `/app/dist/context-B_k_S6nC.mjs:181` sets ChatType, line 188 sets SenderId.
+  `/app/dist/session-accessor.sqlite-entry-Drh07hIN.mjs:86` persists ChatType.
+  `/app/dist/command-auth-DPD2ejxk.mjs:437-445` matches sender candidates against
+  explicit owners, computing `senderIsOwner` (not mere command authorization).
+  `/app/dist/get-reply-DFYHTxys.mjs:3559` carries it into the reply run;
+  `/app/dist/agent-runner-run-params-BJ1Xjo0R.mjs:174` forwards it. The shared
+  audience producer therefore mints owner-private for owner direct, conversation
+  for a Telegram group (even if its sender is owner).
+- **WebChat owner/direct:** `/app/dist/chat-send-handler-Duf_7dlJ.mjs:2457`
+  spreads `resolveChatSendCallerContext`;
+  `/app/dist/gateway-client-identity-CZ8o5hJk.mjs:80-90` sets internal provider,
+  direct ChatType and authenticated GatewayClientScopes. ChatType persists via
+  the same session accessor. `/app/dist/command-auth-DPD2ejxk.mjs:442-445`
+  recognizes internal operator.admin scope as owner; the same reply/run/audience
+  path above supplies the tool owner/private fields. Browser profile carrier
+  at `/app/dist/chat-send-handler-Duf_7dlJ.mjs:2461` is not write authority.
+  **Sender blocker:** `/app/dist/gateway-client-identity-CZ8o5hJk.mjs:85-89`
+  omits `SenderId` for operator UI clients, including Control UI/browser-copilot
+  (`/app/dist/message-channel-fJ_KMM5a.mjs:20-22`). Runtime sender derives from
+  `sessionCtx.SenderId` (`/app/dist/get-reply-DFYHTxys.mjs:3554`) and projects as
+  `requesterSenderId` (`/app/dist/agent-tools-DD0_71KJ.mjs:768`). The optional
+  profile carrier does not fill that field. Ordinary dashboard writes therefore
+  fail the required sender binding even with owner/private audience authority.
+- **Host-generated keys:** `/app/dist/session-key-CSDERtm3.mjs:503` generates
+  `agent:<id>:<channel>:direct:<peer>`; lines 506-510 choose the main key.
+  `/app/dist/session-create-key-BJp-9Sd1.mjs:18` creates dashboard UUID keys.
+  Per-account/per-peer/incognito/cloud variants are intentionally not accepted.
+- **Forwarding:** native fields originate at
+  `/app/dist/helpers-DZ2foAlJ.mjs:461` and
+  `/app/dist/inbound-context-DnPzLOsP.mjs:35`, but are not publicly projected.
+  Any supplied forwarded signal denies; absence is allowed.
 
-**Runtime status: blocked on both channels** by missing tool-factory `chatType`,
-`trigger`, `inputProvenance`. Static ingress-to-projection inspection establishes
-that Telegram cannot currently receive all required fields; no live Telegram run
-or callback trace was performed. No host/config changes, installation or restart.
+**Compatibility result: NO on the inspected current host if only this adapter
+is installed and enabled.** Telegram direct root
+`agent:main:telegram:direct:<id>` can pass the gate with its real sender id and
+a host-minted private audience; dashboard UUID shapes can pass only with an actual
+sender id. The current Control UI ingress omits that id, so dashboard writes deny
+without inventing identity or weakening draft binding. Separately, the inspected
+configuration disables `memory-core` and has no explicit memory slot override;
+this hook/tool adapter registers no `providerRuntime`. Fresh ordinary runs
+therefore fail the native-provider prerequisite at embedded-agent line 4523 and
+have no host-minted audience. This blocks ordinary Telegram writes too. A valid
+already host-minted delegated audience is a distinct path, not ordinary channel
+acceptance. Host identity delivery and audience production need separate changes;
+none are performed here.
+
+Mocked proposal/confirm tests cover projected Telegram direct and sender-bearing
+dashboard contexts, realistic sender-less Control UI denial, group/nonowner/foreign/
+subagent/cron/inter-session/non-private/expired denials. Static bundle inspection
+and mocked HTTP are **not live runtime acceptance**. No config changes,
+installation, restart or live /facts calls were performed.
 
 ### Weaker consent contract and residual risk
 
 The agent, not an inbound hook, interprets “yes”. It must display the question and
 wait for affirmative owner input in a later turn. The adapter cannot prove delivery,
 new-turn timing or semantic consent, and cannot detect forwarded messages with the
-current projected fields. An agent can wrongly call confirm immediately or mistake
+current projected fields. Root automation reusing a private root key without any projected run signal cannot
+be distinguished from a user turn. An agent can wrongly call confirm immediately or mistake
 forwarded/quoted text for consent. This is the explicitly chosen Option C residual
 risk, **not** transport-attested human authorization. Optional future host
 `messageProvenance: "forwarded"` denies operations. Missing provenance is allowed.
@@ -102,4 +139,4 @@ See README for limitations, exact config and owner acceptance steps.
 
 Validation is synthetic HTTP mocks and source inspection only; no live facts read
 or write, runtime install or per-channel acceptance. Keep disabled until the owner
-merges/releases/installs and performs candidate-host and private WebChat/Telegram acceptance after genuine field projection.
+merges/releases/installs and performs candidate-host and private WebChat/Telegram acceptance with the documented projected-context contract.

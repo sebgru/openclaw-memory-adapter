@@ -480,22 +480,32 @@ credential logging is used. Requests reject redirects and credential-bearing URL
    volatile state. Curated-file mirrors require separate reviewed diffs. Forget
    purges the store value, not prior chats/tool histories, external caches or backups.
 
-**Authorization and channel scope:** both tools support owner direct **WebChat and
-Telegram** under the same host-context contract: `senderIsOwner === true`, prepared
-`memoryAudience.kind === "owner-private"`, explicit `chatType === "direct"`,
-`trigger === "user"`, `inputProvenance.kind === "external_user"` without a
-`sourceRole`, nonempty `sessionId` and `requesterSenderId`, and an ordinary root
-main/dashboard or direct-channel session key. CLI one-shot and memory-flush runs
-deny. Subagent/cron/heartbeat/inter-session/synthetic runs, groups, missing chat
-type or missing run provenance deny. `requesterProfileId` is optional metadata,
-not authority or a draft-binding requirement. Never supply context via tool
-parameters, config, prompt JSON or session lookups.
+**Authorization and channel scope:** both tools accept eligible owner-private
+root contexts on any channel using host-projected fields: `senderIsOwner === true`,
+`memoryAudience.kind === "owner-private"`, a required callable
+`assertMemoryAudienceCurrent()` (checked before every backend call and after
+awaits), nonempty `sessionId` and `requesterSenderId`, and a root key matching
+`agent:<id>:main`, `agent:<id>:dashboard:<uuid>` or
+`agent:<id>:<channel>:direct:<peer>`. Group/subagent/cron/hook/heartbeat and other
+key shapes deny, even with an inherited private audience. Account-qualified and
+per-peer direct keys are deliberately outside this bounded contract. CLI one-shot
+and memory-flush runs deny. Optional chat-type/run-kind/provenance fields, when
+present, must not contradict a direct external-user turn; their absence is allowed.
+`requesterProfileId` is optional metadata, not authority or draft binding. Never
+supply context via tool parameters, config, prompt JSON or session lookups.
 
-**Installed-host gap:** Telegram owner authorization reaches the tool context, but
-`chatType` does not: it stops before the public tool-factory projection. Neither
-`trigger` nor `inputProvenance` reaches that projection. Consequently writes fail
-closed on the inspected installed host on **both channels**; synthetic unit tests
-prove adapter behavior, not Telegram runtime acceptance. No host patch is made.
+**Installed-host compatibility: no, installing and enabling this adapter alone
+will not enable both Telegram and WebChat writes on the inspected host.** The host
+does not project `chatType`, `trigger` or `inputProvenance`; those absent fields
+no longer block writes. Telegram owner direct contexts pass mocked
+proposal/confirmation with a host-minted private audience. Dashboard UUID contexts
+pass only if they also carry a real sender id: the installed Control UI ingress
+deliberately omits `SenderId`, so ordinary dashboard writes fail closed. Optional
+requester profiles are not substituted for sender binding. In addition, fresh
+audience minting requires session admission and an enabled native memory provider;
+the inspected configuration disables `memory-core` and this adapter registers no
+native provider. Thus ordinary Telegram writes also lack the required audience
+on this configuration. Neither host limitation is repaired by this adapter.
 See [COMPATIBILITY.md](COMPATIBILITY.md) for exact file:line evidence.
 
 **Residual risk accepted in Option C:** owner account compromise = owner, on
@@ -507,8 +517,9 @@ currently projected; forwarding is not detectable there. Any projected
 `messageProvenance: "forwarded"` or native forwarding metadata denies operations;
 missing forwarding metadata alone is allowed. Copy/paste and quotations can also
 mislead the agent. This is agent-asserted consent, not a transport-attested reply
-protocol; no `inbound_claim`/`message_sent` dependency remains. Requiring host run
-provenance excludes automation, not forwards or semantic consent errors.
+protocol; no `inbound_claim`/`message_sent` dependency remains. Root-key screening and any available contrary run signals exclude identifiable
+automation, not forwards or semantic consent errors. Automated work reusing a root
+key without a projected run signal is indistinguishable from a user turn.
 
 Semantically reject credentials, secrets and transient health/dose state before
 proposal. Conservative adapter screening and backend validation are additional

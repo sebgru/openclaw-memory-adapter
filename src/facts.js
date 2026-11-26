@@ -39,23 +39,25 @@ export function createFacts(api, config) {
   let generation = 0;
   const enabled = config.enabled !== false && config.facts?.enabled === true;
   // All authorization fields are host tool-factory context, never tool arguments.
-  // chatType/trigger/inputProvenance are required contracts: installed hosts that
-  // do not project them cannot enable writes, even if private reads are allowed.
+  // The host-minted audience attests direct owner access; tool contexts do not
+  // project chatType or turn provenance. Optional contrary signals still deny.
   const authorized = (ctx) => enabled && ctx.senderIsOwner === true &&
-    ctx.memoryAudience?.kind === "owner-private" && ctx.chatType === "direct" &&
-    ctx.trigger === "user" && ctx.inputProvenance?.kind === "external_user" &&
-    ctx.inputProvenance.sourceRole === undefined &&
+    ctx.memoryAudience?.kind === "owner-private" &&
+    typeof ctx.assertMemoryAudienceCurrent === "function" &&
+    [ctx.trigger, ctx.runKind, ctx.runType].every((kind) => kind === undefined || kind === "user") &&
+    (ctx.chatType === undefined || ctx.chatType === "direct") &&
+    (ctx.inputProvenance === undefined || ctx.inputProvenance?.kind === "external_user" && ctx.inputProvenance.sourceRole === undefined) &&
     ctx.oneShotCliRun !== true && !ctx.memoryFlush &&
     typeof ctx.sessionId === "string" && !!ctx.sessionId &&
     typeof ctx.requesterSenderId === "string" && !!ctx.requesterSenderId &&
     typeof ctx.sessionKey === "string" &&
-    /^agent:[^:]+:(?:main|dashboard:[^:]+|direct:[^:]+|(?:webchat|telegram):(?:[^:]+:)?direct:[^:]+)$/u.test(ctx.sessionKey) &&
-    ["webchat", "telegram"].includes(ctx.messageChannel) &&
+    /^agent:[^:]+:(?:main|dashboard:[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}|(?!(?:cron|hook|heartbeat|subagent|dashboard|main|direct):)[a-z][a-z0-9_-]*:direct:[^:]+)$/u.test(ctx.sessionKey) &&
     ctx.messageProvenance !== "forwarded" &&
     !Object.keys(ctx).some((key) => (key === "forward_origin" || key === "forwarded" || /^(?:Forwarded|ReplyToForwarded)/u.test(key)) && ctx[key] !== undefined);
   function guard(ctx) {
     ctx.assertInvocationCurrent?.();
-    ctx.assertMemoryAudienceCurrent?.();
+    if (!authorized(ctx)) throw new Error("unauthorized facts");
+    ctx.assertMemoryAudienceCurrent();
     if (!authorized(ctx)) throw new Error("unauthorized facts");
   }
   async function request(path, body, check) {

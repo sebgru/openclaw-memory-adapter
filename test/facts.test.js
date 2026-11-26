@@ -5,7 +5,7 @@ import { createFacts, renderCurrentState, UNAVAILABLE } from "../src/facts.js";
 import plugin from "../index.js";
 
 const value = { action: "add", subject: "person:owner", predicate: "pref.language", value: "English", value_type: "string", unit: null, valid_from: null, privacy_class: "shareable" };
-const owner = { sessionKey: "agent:main:dashboard:private", sessionId: "incarnation", senderIsOwner: true, requesterSenderId: "owner", requesterProfileId: "profile", messageChannel: "webchat", chatType: "direct", trigger: "user", inputProvenance: { kind: "external_user" }, memoryAudience: { kind: "owner-private" } };
+const owner = { sessionKey: "agent:main:dashboard:ae7a4c2c-7c41-447c-8796-d3c656c08127", sessionId: "incarnation", senderIsOwner: true, requesterSenderId: "owner", requesterProfileId: "profile", messageChannel: "webchat", memoryAudience: { kind: "owner-private" }, assertMemoryAudienceCurrent() {} };
 const config = { endpoint: "http://memory.test", facts: { enabled: true } };
 const response = (body) => ({ ok: true, json: async () => body });
 const text = (result) => result.content[0].text;
@@ -64,16 +64,16 @@ test("all host gates deny proposal and confirmation, even inherited owner-privat
   for (const bad of [
     { senderIsOwner: false }, { senderIsOwner: undefined }, { memoryAudience: undefined }, { memoryAudience: { kind: "conversation" } },
     { sessionKey: undefined }, { sessionKey: "agent:main:subagent:child" }, { sessionKey: "agent:main:cron:job" },
-    { sessionKey: "agent:main:heartbeat" }, { sessionKey: "agent:main:telegram:group:123" },
+    { sessionKey: "agent:main:heartbeat" }, { sessionKey: "cron:job" }, { sessionKey: "agent:main:hook:direct:id" }, { sessionKey: "agent:main:dashboard:not-a-uuid" }, { sessionKey: "agent:main:telegram:default:direct:id" }, { sessionKey: "agent:main:direct:owner" }, { sessionKey: "agent:main:inter-session:source" }, { sessionKey: "agent:main:telegram:group:123" },
     { sessionId: undefined }, { sessionId: "" }, { requesterSenderId: undefined }, { requesterSenderId: "" },
-    { chatType: undefined }, { chatType: "group" }, { chatType: "channel" }, { messageChannel: "discord" },
-    { trigger: undefined }, { trigger: "cron" }, { trigger: "heartbeat" },
-    { inputProvenance: undefined }, { inputProvenance: { kind: "inter_session" } },
+    { chatType: "group" }, { chatType: "channel" }, { assertMemoryAudienceCurrent: undefined },
+    { trigger: "cron" }, { trigger: "heartbeat" }, { runKind: "inter_session" }, { runType: "subagent" },
+    { inputProvenance: null }, { inputProvenance: { kind: "inter_session" } },
     { inputProvenance: { kind: "internal_system" } }, { inputProvenance: { kind: "external_user", sourceRole: "subagent" } },
     { oneShotCliRun: true }, { memoryFlush: {} },
     ...["forward_origin", "forwarded", "ForwardedFrom", "ForwardedFromType", "ForwardedFromId", "ForwardedDate", "ForwardedFromUsername", "ForwardedFromTitle", "ForwardedFromSignature", "ForwardedFromChatType", "ForwardedFromMessageId", "ReplyToForwardedFrom"].map((key) => ({ [key]: "present" })),
     { messageProvenance: "forwarded" },
-    { assertInvocationCurrent() { throw Error("revoked"); } }, { assertMemoryAudienceCurrent() { throw Error("revoked"); } },
+    { assertMemoryAudienceCurrent() { this.senderIsOwner = false; } }, { assertInvocationCurrent() { throw Error("revoked"); } }, { assertMemoryAudienceCurrent() { throw Error("revoked"); } },
   ]) {
     const h = harness();
     try {
@@ -89,24 +89,53 @@ test("all host gates deny proposal and confirmation, even inherited owner-privat
   }
 });
 
-test("owner direct WebChat and Telegram work without a requester profile", async () => {
-  for (const messageChannel of ["webchat", "telegram"]) {
-    for (const sessionKey of ["agent:main:main", "agent:main:direct:owner", `agent:main:${messageChannel}:direct:owner`, `agent:main:${messageChannel}:default:direct:owner`]) {
-      const h = harness({ ctx: { messageChannel, sessionKey, requesterProfileId: undefined, forwarded: undefined } });
-      try { const id = await h.ready(); h.ctx.requesterProfileId = "optional-metadata"; assert.match(text(await h.confirm(id)), /committed/); } finally { h.close(); }
-    }
+test("sender-bearing owner-private root contexts allow any channel without profile or run provenance", async () => {
+  for (const [messageChannel, sessionKey] of [
+    ["webchat", owner.sessionKey], ["telegram", "agent:main:telegram:direct:123"],
+    ["webchat", "agent:main:main"], ["discord", "agent:main:discord:direct:123"],
+  ]) {
+    const h = harness({ ctx: { messageChannel, sessionKey, requesterProfileId: undefined, forwarded: undefined } });
+    try { const id = await h.ready(); h.ctx.requesterProfileId = "optional-metadata"; assert.match(text(await h.confirm(id)), /committed/); } finally { h.close(); }
   }
+  const h = harness({ ctx: { chatType: "direct", trigger: "user", runKind: "user", runType: "user", inputProvenance: { kind: "external_user" } } });
+  try { await h.ready(); } finally { h.close(); }
 });
 
-test("Telegram groups, nonowners, missing chat type and unprojected run origin deny both tools", async () => {
-  for (const bad of [{ chatType: "group" }, { senderIsOwner: false }, { chatType: undefined }, { trigger: undefined }, { inputProvenance: undefined }]) {
-    const h = harness({ ctx: { messageChannel: "telegram", requesterProfileId: undefined } });
+test("Control UI dashboard ingress without SenderId denies despite owner/private/profile authority", async () => {
+  // Captured ingress contract: gateway-client-identity-CZ8o5hJk.mjs:83-90
+  // sets direct/admin context but excludes SenderId for operator UI clients.
+  // get-reply-DFYHTxys.mjs:3554 -> agent-tools-DD0_71KJ.mjs:768 preserves absence.
+  const h = harness({ ctx: { requesterSenderId: undefined, requesterProfileId: "verified-profile" } });
+  try {
+    assert.match(text(await h.propose()), /unavailable/);
+    assert.match(text(await h.confirm("foreign")), /unavailable/);
+    assert.equal(h.calls.length, 0);
+  } finally { h.close(); }
+});
+
+test("Telegram group audience and nonowner deny both tools", async () => {
+  for (const bad of [{ sessionKey: "agent:main:telegram:group:123" }, { senderIsOwner: false }, { memoryAudience: { kind: "conversation" } }]) {
+    const h = harness({ ctx: { messageChannel: "telegram", sessionKey: "agent:main:telegram:direct:123", requesterProfileId: undefined } });
     try {
       const id = await h.ready(); Object.assign(h.ctx, bad);
       assert.match(text(await h.propose()), /unavailable/); assert.match(text(await h.confirm(id)), /unavailable/);
       assert.equal(h.calls.length, 1);
     } finally { h.close(); }
   }
+});
+
+test("audience currency is checked immediately before every backend call and after awaits", async () => {
+  let checks = 0;
+  const h = harness({ ctx: { assertMemoryAudienceCurrent() { checks++; } }, fetch(_url, _init, body) {
+    assert.ok(checks >= 2); checks = 0;
+    return response({ ...body, draft_id: "currency", expires_at: new Date(Date.now() + 60000).toISOString() });
+  } });
+  try { await h.ready(); assert.ok(checks >= 2); } finally { h.close(); }
+  const revoked = harness({ fetch(_url, _init, body) {
+    revoked.ctx.assertMemoryAudienceCurrent = () => { throw Error("revoked during I/O"); };
+    return response({ ...body, draft_id: "revoked", expires_at: new Date(Date.now() + 60000).toISOString() });
+  } });
+  try { assert.match(text(await revoked.propose()), /unavailable/); } finally { revoked.close(); }
 });
 
 test("draft binding rejects foreign sender/session/incarnation and unknown ids", async () => {

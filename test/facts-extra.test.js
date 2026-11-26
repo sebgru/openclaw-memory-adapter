@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createFacts } from "../src/facts.js";
 
-const ctx = { sessionKey: "agent:main:dashboard:private", requesterProfileId: "profile", messageChannel: "webchat", chatType: "direct", trigger: "user", inputProvenance: { kind: "external_user" }, sessionId: "one", senderIsOwner: true, requesterSenderId: "owner", memoryAudience: { kind: "owner-private" } };
+const ctx = { sessionKey: "agent:main:dashboard:ae7a4c2c-7c41-447c-8796-d3c656c08127", requesterProfileId: "profile", messageChannel: "webchat", sessionId: "one", senderIsOwner: true, requesterSenderId: "owner", memoryAudience: { kind: "owner-private" }, assertMemoryAudienceCurrent() {} };
 const params = { action: "add", subject: "person:owner", predicate: "pref.language", value: "English", value_type: "string", unit: null, valid_from: null, privacy_class: "shareable" };
 function fixture(config = {}) {
   const hooks = {}, factories = {}, calls = [];
@@ -47,7 +47,7 @@ test("forget revokes held proposals from other sessions and clears pending draft
         { draft_id: "retract", action: "retract" } };
     };
     const old = h.propose();
-    const other = { ...ctx, sessionKey: "agent:main:dashboard:other" };
+    const other = { ...ctx, sessionKey: "agent:main:dashboard:be7a4c2c-7c41-447c-8796-d3c656c08127" };
     await h.propose(other, { ...params, action: "forget" });
     assert.match((await h.confirm("retract", other)).content[0].text, /committed: retract/);
     release(); assert.match((await old).content[0].text, /unavailable/);
