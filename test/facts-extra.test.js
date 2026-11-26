@@ -29,7 +29,7 @@ test("no fact cache: every recall checks authority and backend again", async () 
     assert.match((await h.facts.recall(ctx, { query: "language", fact_subject: "person:owner", fact_predicate: "pref.language" })).content[0].text, /resolved/);
     state = "not_found";
     assert.match((await h.facts.recall(ctx, { query: "language", fact_subject: "person:owner", fact_predicate: "pref.language" })).content[0].text, /not_found/);
-    assert.match((await h.facts.recall({ ...ctx, memoryAudience: undefined }, {})).content[0].text, /unavailable/);
+    assert.match((await h.facts.recall({ ...ctx, senderIsOwner: false }, {})).content[0].text, /unavailable/);
   } finally { h.close(); }
 });
 

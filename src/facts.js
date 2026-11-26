@@ -38,7 +38,7 @@ export function createFacts(api, config) {
   const pending = new Map();
   let generation = 0;
   const enabled = config.enabled !== false && config.facts?.enabled === true;
-  // All authorization fields are host tool-factory context, never tool arguments.
+  // All authorization fields are host context, never tool arguments or prompt text.
   // Prefer the host-minted audience. Without one, the host-generated root key
   // and host-computed owner flag attest private access. Never trust tool args.
   const authorized = (ctx) => enabled && ctx.senderIsOwner === true &&
@@ -167,8 +167,9 @@ export function createFacts(api, config) {
     }), { name: "memory_fact_confirm" });
   }
   function readGuard(ctx) {
-    ctx.assertMemoryAudienceCurrent?.();
-    if (!enabled || ctx.memoryAudience?.kind !== "owner-private" || ctx.messageProvenance === "forwarded") throw new Error("unauthorized recall");
+    // Share write authority, including strict present-audience validation and
+    // root-only fallback. Subagents stay denied, even with inherited authority.
+    guard(ctx);
   }
   async function current(ctx) {
     try {
@@ -188,6 +189,14 @@ export function createFacts(api, config) {
   }
   return {
     current,
+    revalidateCurrent(ctx, notice) {
+      try {
+        readGuard(ctx);
+        return notice;
+      } catch {
+        return UNAVAILABLE;
+      }
+    },
     async recall(ctx, params) {
       try {
         const check = () => readGuard(ctx);

@@ -299,7 +299,7 @@ test("unavailable is not absence, owner-private reads recheck currency", async (
     const h = harness({ search: payload });
     try { assert.match(text(await h.facts.recall(h.ctx, { query: "x", fact_subject: "person:owner", fact_predicate: "pref.language" })), payload.current_state?.[0]?.state === "not_found" ? /not_found/ : /unavailable/); } finally { h.close(); }
   }
-  for (const ctx of [{ memoryAudience: undefined }, { messageProvenance: "forwarded" }, { assertMemoryAudienceCurrent() { throw Error("revoked"); } }]) {
+  for (const ctx of [{ senderIsOwner: undefined }, { messageProvenance: "forwarded" }, { assertMemoryAudienceCurrent() { throw Error("revoked"); } }]) {
     const h = harness(); try { assert.match(text(await h.facts.recall({ ...h.ctx, ...ctx }, {})), /unavailable/); assert.equal(h.calls.length, 0); } finally { h.close(); }
   }
 });
@@ -358,5 +358,105 @@ test("automatic facts overlap evidence and stay inside the registered hook deadl
       assert.match(result.prependContext, /PRIVATE FACT/);
       if (evidenceFails) assert.match(result.prependContext, /retrieval unavailable/);
     } finally { h.close(); }
+  }
+});
+
+test("owner root recall without audience works through unified search and the prompt hook", async () => {
+  for (const sessionKey of ["agent:main:telegram:direct:owner", owner.sessionKey, "agent:main:main"]) {
+    const h = harness({ plugin: true, ctx: { sessionKey, memoryAudience: undefined, assertMemoryAudienceCurrent: undefined, requesterSenderId: undefined }, current: { state: "resolved", current: { value: "PRIVATE FACT" } } });
+    try {
+      assert.match(text(await h.tools.unified_memory_search.execute("call", { query: "language" })), /PRIVATE FACT/);
+      assert.match((await h.hooks.before_prompt_build({ prompt: "language?" }, h.ctx)).prependContext, /PRIVATE FACT/);
+      assert.equal(h.calls.filter(({ url }) => url.includes("/facts/current")).length, 36);
+      assert.deepEqual(h.logs, []);
+    } finally { h.close(); }
+  }
+});
+
+test("both recall paths deny non-owner, non-private, automation and non-root contexts", async () => {
+  const denied = [
+    { senderIsOwner: false }, { senderIsOwner: undefined }, // Actual installed hook lacks this field.
+    { memoryAudience: null }, { memoryAudience: {} }, { memoryAudience: { kind: "conversation" } },
+    { memoryAudience: { kind: "owner-private" }, assertMemoryAudienceCurrent: undefined },
+    { memoryAudience: { kind: "owner-private" }, assertMemoryAudienceCurrent() { throw Error("revoked"); } },
+    { chatType: "group" }, { trigger: "cron" }, { trigger: "heartbeat" }, { trigger: "hook" },
+    { inputProvenance: { kind: "inter_session" } }, { memoryFlush: true },
+    ...["telegram:group:123", "discord:channel:123", "subagent:child", "cron:job", "hook:job", "heartbeat:job", "inter-session:peer", "unknown:direct:owner"].map((suffix) => ({ sessionKey: "agent:main:" + suffix })),
+    // Even inherited private authority does not enable subagent recall.
+    { sessionKey: "agent:main:subagent:child", memoryAudience: { kind: "owner-private" }, assertMemoryAudienceCurrent() {} },
+  ];
+  for (const bad of denied) {
+    const h = harness({ plugin: true, ctx: { memoryAudience: undefined, assertMemoryAudienceCurrent: undefined, ...bad } });
+    try {
+      assert.match(text(await h.tools.unified_memory_search.execute("call", { query: "language", fact_subject: "person:owner" })), /unavailable/);
+      const result = await h.hooks.before_prompt_build({ prompt: "language?" }, h.ctx);
+      if (result) assert.match(result.prependContext, /Current facts unavailable/);
+      assert.equal(h.calls.some(({ url }) => url.includes("/facts/") || url.includes("fact_subject=")), false);
+      assert.deepEqual(h.logs, []);
+    } finally { h.close(); }
+  }
+});
+
+test("absent-audience backend failure is unavailable in both recall paths, not absence", async () => {
+  const h = harness({ plugin: true, ctx: { memoryAudience: undefined, assertMemoryAudienceCurrent: undefined }, fetch() { throw Error("PRIVATE FAILURE"); } });
+  try {
+    assert.match(text(await h.tools.unified_memory_search.execute("call", { query: "language" })), /Current facts unavailable/);
+    const result = await h.hooks.before_prompt_build({ prompt: "language?" }, h.ctx);
+    assert.match(result.prependContext, /Current facts unavailable/);
+    assert.doesNotMatch(result.prependContext, /not_found|PRIVATE FAILURE/);
+    assert.deepEqual(h.logs, ["memory-adapter: retrieval failed; details omitted"]);
+  } finally { h.close(); }
+});
+
+test("recall rechecks owner and present audience after IO without falling back", async () => {
+  for (const revoke of [
+    (ctx) => { ctx.senderIsOwner = false; },
+    (ctx) => { ctx.memoryAudience = { kind: "conversation" }; },
+    (ctx) => { ctx.assertMemoryAudienceCurrent = () => { throw Error("expired"); }; },
+  ]) {
+    const h = harness({ fetch() { revoke(h.ctx); return response({ results: [], current_state: [{ state: "resolved", current: { value: "PRIVATE FACT" } }] }); } });
+    try {
+      assert.match(text(await h.facts.recall(h.ctx, { query: "language", fact_subject: "person:owner" })), /unavailable/);
+      assert.equal(h.calls.length, 1);
+    } finally { h.close(); }
+  }
+});
+
+
+test("prompt hook revalidates completed facts after delayed evidence on success and failure", async () => {
+  for (const evidenceFails of [false, true]) {
+    for (const turnReceipts of [false, true]) {
+      for (const revoke of [
+        (ctx) => { ctx.senderIsOwner = false; },
+        (ctx) => { ctx.assertMemoryAudienceCurrent = () => { throw Error("expired private audience"); }; },
+      ]) {
+        const h = harness({ plugin: true, config: { turnReceipts } });
+        try {
+          let releaseEvidence;
+          const evidence = new Promise((resolve) => { releaseEvidence = resolve; });
+          let completedFacts = 0;
+          globalThis.fetch = async (url) => {
+            if (url.includes("/facts/current")) return { ok: true, json: async () => {
+              completedFacts++;
+              return { state: "resolved", current: { value: "PRIVATE FACT" } };
+            } };
+            await evidence;
+            if (evidenceFails) throw Error("PRIVATE FAILURE");
+            return response({ results: [] });
+          };
+          const work = h.hooks.before_prompt_build({ prompt: "language?" }, h.ctx);
+          // Let the entire facts lane finish while evidence remains held.
+          await new Promise((resolve) => setImmediate(resolve));
+          assert.equal(completedFacts, 18);
+          revoke(h.ctx);
+          releaseEvidence();
+          const result = await work;
+          assert.match(result.prependContext, /Current facts unavailable/);
+          assert.doesNotMatch(result.prependContext, /PRIVATE FACT|PRIVATE FAILURE/);
+          assert.equal(h.calls.length, 0); // Fetch was replaced: no second facts fetch.
+          assert.equal(completedFacts, 18);
+        } finally { h.close(); }
+      }
+    }
   }
 });

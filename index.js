@@ -80,6 +80,8 @@ export default definePluginEntry({
     const facts = createFacts(api, config);
     api.on("before_prompt_build", async (event, ctx) => {
       if (!eligible(event, ctx, config)) return undefined;
+      // Some hosts omit senderIsOwner here. Facts must then fail closed; never
+      // infer owner from senderId/sessionKey or reuse a cached tool context.
       const factNoticePromise = config.facts?.enabled === true ? facts.current(ctx) : undefined;
       const turnReceipts = config.turnReceipts === true;
       const scope = "all";
@@ -170,7 +172,10 @@ export default definePluginEntry({
             outcome: documents.failed ? "unavailable" : "merged",
           })}`);
         }
-        const factNotice = await factNoticePromise;
+        // Evidence may finish after the facts lane. Recheck authority at emission
+        // without fetching again, including when evidence retrieval failed.
+        const factNotice = config.facts?.enabled === true
+          ? facts.revalidateCurrent(ctx, await factNoticePromise) : undefined;
         const { results, warnings, conflicts, coverage, lowConfidence } = retrieval;
         if (warnings?.length) {
           api.logger.warn?.(`memory-adapter: service reported ${warnings.length} warning(s); details omitted`);
@@ -208,7 +213,10 @@ export default definePluginEntry({
         return { prependContext };
       } catch {
         documentsAbort.abort();
-        const factNotice = await factNoticePromise;
+        // Evidence may finish after the facts lane. Recheck authority at emission
+        // without fetching again, including when evidence retrieval failed.
+        const factNotice = config.facts?.enabled === true
+          ? facts.revalidateCurrent(ctx, await factNoticePromise) : undefined;
         api.logger.warn?.("memory-adapter: retrieval failed; details omitted");
         if (!turnReceipts) {
           return { prependContext: [factNotice, FAILURE_NOTICE].filter(Boolean).join("\n\n") };

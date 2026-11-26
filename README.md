@@ -512,8 +512,9 @@ bundle inspection verifies owner flag delivery to both embedded and claude-cli
 MCP plugin tool contexts. Neither disabled native `memory-core` nor omitted
 Control UI SenderId blocks writes with this fallback. This is source-backed
 compatibility, **not live runtime acceptance**; no install or live writes were
-performed. Fact recall still requires an owner-private memory audience; this
-write-gate fallback does not change the existing recall contract.
+performed. Unified-tool fact recall uses the same owner/root fallback. Prompt-hook
+fact recall remains unavailable on this inspected host because its context omits
+`senderIsOwner`; use `unified_memory_search` as the trusted working recall path.
 See [COMPATIBILITY.md](COMPATIBILITY.md) for exact file:line evidence.
 
 **Residual risk accepted in Option C:** owner account compromise = owner, on
@@ -538,9 +539,21 @@ unsupported; weight stays in its canonical food log.
 
 When the flag is on, `unified_memory_search` and eligible `before_prompt_build`
 auto-recall render current facts **before evidence**, without needing an explicit
-fact tool call. Read access requires the host-prepared owner-private memory audience
-and checks its currency across awaits; this read capability may legitimately be
-inherited by subagents, unlike write authority. Nonprivate audiences get unavailable.
+fact tool call when the host supplies owner authority. Read access uses exactly
+the write guard: `senderIsOwner === true`, a supported private root, and either
+a current owner-private audience or the absent-audience fallback described above.
+Present nonprivate/expired audiences never fall back. Subagents remain denied,
+even with inherited private authority (a deliberately conservative restriction).
+All checks run before requests and after awaits; failures mean unavailable, not
+absence. Restricted current-state redaction is unchanged.
+
+**Inspected-host limitation:** both native and harness `before_prompt_build`
+contexts omit `senderIsOwner`. Automatic hook facts therefore fail closed. The
+host tool factory (including local Claude MCP) does supply the computed owner
+flag, so `unified_memory_search` is the safest working recall source for Telegram
+owner direct and authenticated dashboard private roots after install + enable.
+No sender-id/config inference or cross-turn authority cache is used. See
+[COMPATIBILITY.md](COMPATIBILITY.md) for exact bundle citations.
 
 The backend requires a concrete slot, so automatic recall uses a bounded parallel
 slice of the 18 registry predicates for `person:owner` (no item key), with no cache
