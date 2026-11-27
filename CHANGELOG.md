@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.13.0 (unreleased)
+
+- Preserve ordinary unified memory search when private facts are unauthorized or fail (including timeouts and malformed state). Prepend the facts-only unavailable notice, retain normal search parameters, formatting and receipts, and log the bounded reason code. Fallback requests use neither fact markers nor the facts bearer token and never emit fact state. Authorized successful recall and authorization rules are unchanged.
+- Add privacy-safe internal reason diagnostics for owner-private fact hook recall, tool recall, proposals and confirmations. Only static stage/reason codes and allowlisted context-field presence booleans are logged; errors, URLs, credentials, prompts, fact values and identifiers are never logged.
+- Dedupe identical session/stage/reason diagnostics for 60 seconds with bounded retention (256 entries). Authorization, external unavailable notices and fail-closed behavior are unchanged.
+- Add reason-path, privacy, revalidation and dedupe regression coverage. No activation or configuration changes; installation after merge requires a plugin reload, not a Gateway restart.
+
 ## 1.12.0
 
 - Add disabled-by-default Option C SecretRef-authenticated owner-private propose/confirm tools, lifecycle/forget drafts and automatic bounded current-fact recall. Agent-interpreted consent replaces unavailable inbound/delivery hooks; local authenticated requester profiles gate WebChat writes. Forwarding/consent residual risks and unsupported Telegram writes are documented. No deployment.

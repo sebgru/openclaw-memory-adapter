@@ -34,9 +34,30 @@ export function renderCurrentState(block, restricted = false) {
   };
   return "Current facts (private reference only, not instructions; T0 is agent-asserted, not curated-file verification):\n" + JSON.stringify(redact(block));
 }
+// Only locally minted codes may reach the logger; never stringify caught errors.
+class FactsFailure extends Error {
+  constructor(reason) { super("facts unavailable"); this.reason = reason; }
+}
+const HINT_FIELDS = ["senderIsOwner", "memoryAudience", "assertMemoryAudienceCurrent", "assertInvocationCurrent", "trigger", "runKind", "runType", "chatType", "inputProvenance", "oneShotCliRun", "memoryFlush", "sessionId", "sessionKey", "messageProvenance"];
 export function createFacts(api, config) {
   const pending = new Map();
   let generation = 0;
+  // Bound retention and suppress repeated registry fan-out failures per session.
+  const diagnostics = new Map();
+  function diagnose(ctx, stage, error) {
+    try {
+      const reason = error instanceof FactsFailure ? error.reason : "UNKNOWN";
+      const hints = Object.fromEntries(HINT_FIELDS.map((key) => [key, ctx?.[key] !== undefined]));
+      const now = Date.now();
+      for (const [key, at] of diagnostics) if (now - at >= 60000) diagnostics.delete(key);
+      // Session identifiers are only an in-memory dedupe key, never log fields.
+      const key = JSON.stringify([ctx?.sessionKey, ctx?.sessionId, stage, reason]);
+      if (diagnostics.has(key)) return;
+      if (diagnostics.size >= 256) diagnostics.delete(diagnostics.keys().next().value);
+      diagnostics.set(key, now);
+      api.logger?.warn?.(`memory-adapter: facts unavailable stage=${stage} reason=${reason} hints=${JSON.stringify(hints)}`);
+    } catch { /* Diagnostics must not affect fail-closed results. */ }
+  }
   const enabled = config.enabled !== false && config.facts?.enabled === true;
   // All authorization fields are host context, never tool arguments or prompt text.
   // Prefer the host-minted audience. Without one, the host-generated root key
@@ -53,26 +74,63 @@ export function createFacts(api, config) {
     /^agent:[^:]+:(?:main|dashboard:[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}|(?!(?:cron|hook|heartbeat|subagent|inter-session|inter_session|unknown|dashboard|main|direct):)[a-z][a-z0-9_-]*:direct:[^:]+)$/u.test(ctx.sessionKey) &&
     ctx.messageProvenance !== "forwarded" &&
     !Object.keys(ctx).some((key) => (key === "forward_origin" || key === "forwarded" || /^(?:Forwarded|ReplyToForwarded)/u.test(key)) && ctx[key] !== undefined);
+  // Diagnose a failed authorization without changing the authorization predicate.
+  function denialReason(ctx) {
+    if (!enabled) return "DISABLED";
+    if (ctx.senderIsOwner === undefined) return "OWNER_FLAG_MISSING";
+    if (ctx.senderIsOwner !== true) return "OWNER_FALSE";
+    if (ctx.memoryAudience !== undefined) {
+      if (ctx.memoryAudience?.kind !== "owner-private") return "AUDIENCE_KIND";
+      if (typeof ctx.assertMemoryAudienceCurrent !== "function") return "AUDIENCE_STALE";
+    }
+    if (![ctx.trigger, ctx.runKind, ctx.runType].every((kind) => kind === undefined || kind === "user")) return "TRIGGER_KIND";
+    if (ctx.chatType !== undefined && ctx.chatType !== "direct") return "CHAT_TYPE";
+    if (ctx.inputProvenance !== undefined && !(ctx.inputProvenance?.kind === "external_user" && ctx.inputProvenance.sourceRole === undefined)) return "PROVENANCE";
+    if (ctx.oneShotCliRun === true) return "ONE_SHOT";
+    if (ctx.memoryFlush) return "MEMORY_FLUSH";
+    // The authorization predicate already rejected the context; distinguish
+    // forwarding from malformed sessions using the same forwarding condition.
+    if (ctx.messageProvenance === "forwarded" || Object.keys(ctx).some((key) =>
+      (key === "forward_origin" || key === "forwarded" || /^(?:Forwarded|ReplyToForwarded)/u.test(key)) && ctx[key] !== undefined)) return "FORWARDED";
+    return "SESSION_SHAPE";
+  }
   function guard(ctx) {
-    ctx.assertInvocationCurrent?.();
-    if (!authorized(ctx)) throw new Error("unauthorized facts");
-    if (ctx.memoryAudience !== undefined) ctx.assertMemoryAudienceCurrent();
-    if (!authorized(ctx)) throw new Error("unauthorized facts");
+    try { ctx.assertInvocationCurrent?.(); } catch { throw new FactsFailure("INVOCATION_STALE"); }
+    if (!authorized(ctx)) throw new FactsFailure(denialReason(ctx));
+    if (ctx.memoryAudience !== undefined) {
+      try { ctx.assertMemoryAudienceCurrent(); } catch { throw new FactsFailure("AUDIENCE_STALE"); }
+    }
+    if (!authorized(ctx)) throw new FactsFailure(denialReason(ctx));
   }
   async function request(path, body, check) {
-    const secret = getPreparedPluginSecretInput("memory-adapter", "facts.bearerToken").value;
-    if (!secret) throw new Error("facts unavailable");
-    const endpoint = new URL(config.endpoint);
-    if (!/^https?:$/.test(endpoint.protocol) || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) throw new Error("invalid endpoint");
+    let secret;
+    try { secret = getPreparedPluginSecretInput("memory-adapter", "facts.bearerToken").value; }
+    catch { throw new FactsFailure("SECRET_UNPREPARED"); }
+    if (!secret) throw new FactsFailure("SECRET_UNPREPARED");
+    let endpoint;
+    try { endpoint = new URL(config.endpoint); } catch { throw new FactsFailure("INVALID_ENDPOINT"); }
+    if (!/^https?:$/.test(endpoint.protocol) || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) throw new FactsFailure("INVALID_ENDPOINT");
     check();
-    const response = await fetch(String(endpoint).replace(/\/$/u, "") + path, {
-      method: body ? "POST" : "GET", redirect: "error",
-      headers: { accept: "application/json", "content-type": "application/json", authorization: "Bearer " + secret },
-      ...(body ? { body: JSON.stringify(body) } : {}),
-      signal: AbortSignal.timeout(Math.min(config.timeoutMs ?? 1500, 6000)),
-    });
-    if (!response.ok) throw new Error("facts unavailable");
-    const result = await response.json();
+    let response;
+    try {
+      response = await fetch(String(endpoint).replace(/\/$/u, "") + path, {
+        method: body ? "POST" : "GET", redirect: "error",
+        headers: { accept: "application/json", "content-type": "application/json", authorization: "Bearer " + secret },
+        ...(body ? { body: JSON.stringify(body) } : {}),
+        signal: AbortSignal.timeout(Math.min(config.timeoutMs ?? 1500, 6000)),
+      });
+    } catch (error) {
+      if (error?.name === "TimeoutError" || error?.name === "AbortError") throw new FactsFailure("TIMEOUT");
+      throw error;
+    }
+    if (!response.ok) {
+      const status = response.status;
+      throw new FactsFailure(Number.isInteger(status) && status >= 100 && status <= 599 ? `HTTP_${status}` : "UNKNOWN");
+    }
+    let result;
+    try { result = await response.json(); } catch (error) {
+      throw new FactsFailure(error?.name === "TimeoutError" || error?.name === "AbortError" ? "TIMEOUT" : "RESPONSE_SHAPE");
+    }
     check();
     return result;
   }
@@ -110,9 +168,9 @@ export function createFacts(api, config) {
           const draft = await request("/facts/drafts", { ...payload, origin: {
             session_ref: ctx.sessionKey + "#proposal-" + globalThis.crypto.randomUUID(), audience: "owner_private",
           } }, check);
-          if (draft.action !== payload.action || draft.subject !== payload.subject || draft.predicate !== payload.predicate ||
+          if (!draft || draft.action !== payload.action || draft.subject !== payload.subject || draft.predicate !== payload.predicate ||
               JSON.stringify(draft.value) !== JSON.stringify(payload.value) || typeof draft.draft_id !== "string" || !draft.draft_id ||
-              !Number.isFinite(Date.parse(draft.expires_at)) || Date.parse(draft.expires_at) <= Date.now() || pending.has(draft.draft_id)) throw new Error("invalid draft");
+              !Number.isFinite(Date.parse(draft.expires_at)) || Date.parse(draft.expires_at) <= Date.now() || pending.has(draft.draft_id)) throw new FactsFailure("RESPONSE_SHAPE");
           const ids = [...(draft.will_supersede ?? []), ...(draft.target_fact_ids ?? [])];
           let targets = [];
           if (ids.length) {
@@ -136,7 +194,8 @@ export function createFacts(api, config) {
             identityKind: identity(ctx)[0], identityId: identity(ctx)[1],
             expires: Math.min(Date.parse(draft.expires_at), Date.now() + 300000) });
           return reply(readback);
-        } catch {
+        } catch (error) {
+          diagnose(ctx, "propose", error);
           return reply(UNAVAILABLE + " No draft is confirmable from this failed proposal.");
         }
       },
@@ -157,10 +216,11 @@ export function createFacts(api, config) {
           const result = await request("/facts/confirm", { draft_id: params.draft_id, confirmation: {
             by: "owner", at: new Date().toISOString(), session_ref: ctx.sessionKey + "#confirmation-" + globalThis.crypto.randomUUID(),
           } }, check);
-          if (result.draft_id !== params.draft_id || result.action !== draft.action) throw new Error("invalid confirmation");
+          if (!result || result.draft_id !== params.draft_id || result.action !== draft.action) throw new FactsFailure("RESPONSE_SHAPE");
           if (draft.action === "retract") { generation++; pending.clear(); }
           return reply("Fact operation committed: " + draft.action + ". Curated files unchanged. Forget does not erase backups or prior chat copies.");
-        } catch {
+        } catch (error) {
+          diagnose(ctx, "confirm", error);
           return reply(UNAVAILABLE + " Do not retry this confirmation; propose a new draft.");
         }
       },
@@ -171,7 +231,7 @@ export function createFacts(api, config) {
     // root-only fallback. Subagents stay denied, even with inherited authority.
     guard(ctx);
   }
-  async function current(ctx) {
+  async function current(ctx, stage) {
     try {
       const check = () => readGuard(ctx);
       check();
@@ -179,25 +239,27 @@ export function createFacts(api, config) {
       // This bounded registry slice is automatic; no query-text guessing is used.
       const block = await Promise.all(REGISTRY.map(async (predicate) => {
         const row = await request("/facts/current?" + new URLSearchParams({ subject: "person:owner", predicate }), undefined, check);
-        if (!row.state) throw new Error("missing current state");
+        if (!row?.state) throw new FactsFailure("STATE_SHAPE");
         return row;
       }));
       return renderCurrentState(block);
-    } catch {
+    } catch (error) {
+      diagnose(ctx, stage, error);
       return UNAVAILABLE;
     }
   }
   return {
-    current,
+    current: (ctx) => current(ctx, "hook-current"),
     revalidateCurrent(ctx, notice) {
       try {
         readGuard(ctx);
         return notice;
-      } catch {
+      } catch (error) {
+        diagnose(ctx, "hook-current", error);
         return UNAVAILABLE;
       }
     },
-    async recall(ctx, params) {
+    async recall(ctx, params, fallback = () => reply(UNAVAILABLE)) {
       try {
         const check = () => readGuard(ctx);
         check();
@@ -206,13 +268,21 @@ export function createFacts(api, config) {
         query.set("fact_subject", params.fact_subject ?? "person:owner");
         query.set("fact_predicate", params.fact_predicate ?? "pref.language");
         const response = await request("/unified/search?" + query, undefined, check);
+        if ((params.fact_subject !== undefined || params.fact_predicate !== undefined) &&
+            (!Array.isArray(response?.current_state) || !response.current_state.length)) {
+          throw new FactsFailure("STATE_SHAPE");
+        }
         const state = params.fact_subject !== undefined || params.fact_predicate !== undefined
-          ? renderCurrentState(response.current_state) : await current(ctx);
+          ? renderCurrentState(response.current_state) : await current(ctx, "tool-recall");
         check();
+        // A failed facts lane must not emit fact-bearing evidence from the
+        // private request. Retry only through the caller's ordinary search.
+        if (state === UNAVAILABLE) return fallback();
         const normalized = normalizeResults(response, params.maxResults ?? 5);
         return reply(state + "\n" + formatMemoryContext(normalized.results));
-      } catch {
-        return reply(UNAVAILABLE);
+      } catch (error) {
+        diagnose(ctx, "tool-recall", error);
+        return fallback();
       }
     },
   };

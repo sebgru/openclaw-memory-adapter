@@ -1,4 +1,4 @@
-import { createFacts } from "./src/facts.js";
+import { createFacts, UNAVAILABLE } from "./src/facts.js";
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import { LOW_CONFIDENCE_NOTICE, buildMemoryContextDetails, formatMemoryContext, searchUnified } from "./src/client.js";
 import { buildReceipt, formatReceiptNotice, receiptTraceSummary } from "./src/receipt.js";
@@ -240,48 +240,53 @@ export default definePluginEntry({
       description: "Search authoritative memory, output metadata, indexed documents, and the session archive through the external memory service.",
       parameters: UnifiedMemorySearchParameters,
       execute: async (_toolCallId, params) => {
-        if (config.facts?.enabled === true || params.fact_subject !== undefined || params.fact_predicate !== undefined) return facts.recall(ctx, params);
-        const scope = params.scope ?? config.scope ?? "all";
-        const turnId = (typeof _toolCallId === "string" && _toolCallId.slice(0, 128)) || globalThis.crypto.randomUUID();
-        const startedAt = Date.now();
-        try {
-          const { results, warnings, conflicts, coverage, lowConfidence } = await searchUnified(params.query, { ...config, scope, profile: "tool", maxResults: params.maxResults ?? config.maxResults });
-          const { text: context, truncated, includedCount } = buildMemoryContextDetails(results);
-          const receipt = buildReceipt({
-            turnId,
-            scope,
-            startedAt,
-            endedAt: Date.now(),
-            resultCount: results.length,
-            includedCount,
-            warnings,
-            conflicts,
-            coverage,
-            requireCoverage: config.requireServiceCoverage === true,
-            truncated,
-            lowConfidence,
-          });
-          const textParts = [];
-          if (results.length === 0) {
-            textParts.push("No memory results.");
-          } else {
-            textParts.push(context);
-            if (receipt.lowConfidence) textParts.push(LOW_CONFIDENCE_NOTICE);
+        const searchEvidence = async (factNotice) => {
+          const scope = params.scope ?? config.scope ?? "all";
+          const turnId = (typeof _toolCallId === "string" && _toolCallId.slice(0, 128)) || globalThis.crypto.randomUUID();
+          const startedAt = Date.now();
+          try {
+            const { results, warnings, conflicts, coverage, lowConfidence } = await searchUnified(params.query, { ...config, scope, profile: "tool", maxResults: params.maxResults ?? config.maxResults });
+            const { text: context, truncated, includedCount } = buildMemoryContextDetails(results);
+            const receipt = buildReceipt({
+              turnId,
+              scope,
+              startedAt,
+              endedAt: Date.now(),
+              resultCount: results.length,
+              includedCount,
+              warnings,
+              conflicts,
+              coverage,
+              requireCoverage: config.requireServiceCoverage === true,
+              truncated,
+              lowConfidence,
+            });
+            const textParts = [factNotice].filter(Boolean);
+            if (results.length === 0) {
+              textParts.push("No memory results.");
+            } else {
+              textParts.push(context);
+              if (receipt.lowConfidence) textParts.push(LOW_CONFIDENCE_NOTICE);
+            }
+            if (warnings?.length) {
+              textParts.push(`Warnings: ${warnings.slice(0, 3).join("; ")}`);
+            }
+            return {
+              content: [{ type: "text", text: textParts.join("\n") }],
+              details: { scope, results, warnings, conflicts, lowConfidence: receipt.lowConfidence, receipt },
+            };
+          } catch (error) {
+            const receipt = buildReceipt({ turnId, scope, startedAt, endedAt: Date.now(), error: true });
+            return {
+              content: [{ type: "text", text: [factNotice, FAILURE_NOTICE].filter(Boolean).join("\n") }],
+              details: { scope, error: String(error), receipt },
+            };
           }
-          if (warnings?.length) {
-            textParts.push(`Warnings: ${warnings.slice(0, 3).join("; ")}`);
-          }
-          return {
-            content: [{ type: "text", text: textParts.join("\n") }],
-            details: { scope, results, warnings, conflicts, lowConfidence: receipt.lowConfidence, receipt },
-          };
-        } catch (error) {
-          const receipt = buildReceipt({ turnId, scope, startedAt, endedAt: Date.now(), error: true });
-          return {
-            content: [{ type: "text", text: FAILURE_NOTICE }],
-            details: { scope, error: String(error), receipt },
-          };
+        };
+        if (config.facts?.enabled === true || params.fact_subject !== undefined || params.fact_predicate !== undefined) {
+          return facts.recall(ctx, params, () => searchEvidence(UNAVAILABLE));
         }
+        return searchEvidence();
       },
     }), { name: "unified_memory_search" });
   },

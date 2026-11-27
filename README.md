@@ -578,6 +578,42 @@ so the compatible backend also suppresses query logging. Ordinary evidence-only
 prompt searches retain the backend's general-search logging policy. Agent-visible tool results/chat history necessarily contain the
 read-back; do not confuse log redaction with history deletion.
 
+### Privacy-safe fact diagnostics (1.13.0)
+
+Failed fact operations emit a plugin `warn` line with this exact format:
+
+```text
+memory-adapter: facts unavailable stage=<stage> reason=<code> hints=<JSON object of presence booleans>
+```
+
+Stages are `hook-current`, `tool-recall`, `propose` and `confirm`. An implicit
+current-fact slice invoked by tool recall uses `tool-recall`; prompt revalidation
+uses `hook-current`. Codes are `DISABLED`, `OWNER_FLAG_MISSING`, `OWNER_FALSE`,
+`AUDIENCE_KIND`, `AUDIENCE_STALE`, `TRIGGER_KIND`, `CHAT_TYPE`, `PROVENANCE`,
+`ONE_SHOT`, `MEMORY_FLUSH`, `SESSION_SHAPE`, `FORWARDED`, `INVOCATION_STALE`,
+`SECRET_UNPREPARED`, `INVALID_ENDPOINT`, `HTTP_<status>` (numeric 100–599),
+`TIMEOUT`, `STATE_SHAPE`, `RESPONSE_SHAPE` and `UNKNOWN`. Missing audience
+validators and rejected audience-currency assertions both use `AUDIENCE_STALE`.
+Unclassified failures, including draft screening/scope/expiry failures, use
+`UNKNOWN`; caught error text is never logged.
+
+The JSON object contains only these fixed keys, in this order: `senderIsOwner`,
+`memoryAudience`, `assertMemoryAudienceCurrent`, `assertInvocationCurrent`,
+`trigger`, `runKind`, `runType`, `chatType`, `inputProvenance`, `oneShotCliRun`,
+`memoryFlush`, `sessionId`, `sessionKey`, `messageProvenance`. Each value means
+only that the corresponding context field is not `undefined`, **not** its value
+or truthiness. Session identifiers are used only in an in-memory dedupe key and
+never emitted. No credentials, endpoint/query text, fact payloads, prompts,
+sender/profile identifiers or exception details are logged.
+
+Identical session/incarnation + stage + reason lines are suppressed for 60
+seconds (at most 256 retained keys per plugin instance). Success is silent.
+Logging failures cannot change replies. Authorization, external unavailable
+notices, request timeouts and fail-closed behavior are unchanged. These codes
+diagnose a newly observed failure; they do not prove a historical root cause.
+After merge and installation, this diagnostics-only update needs a **plugin
+reload, not a Gateway restart**. This change does not install or activate it.
+
 ### Later operator enablement
 
 Review/merge PR #23 after CI and independent approval, release a new minor adapter
