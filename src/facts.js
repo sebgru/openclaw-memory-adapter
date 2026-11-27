@@ -259,7 +259,7 @@ export function createFacts(api, config) {
         return UNAVAILABLE;
       }
     },
-    async recall(ctx, params) {
+    async recall(ctx, params, fallback = () => reply(UNAVAILABLE)) {
       try {
         const check = () => readGuard(ctx);
         check();
@@ -270,16 +270,19 @@ export function createFacts(api, config) {
         const response = await request("/unified/search?" + query, undefined, check);
         if ((params.fact_subject !== undefined || params.fact_predicate !== undefined) &&
             (!Array.isArray(response?.current_state) || !response.current_state.length)) {
-          diagnose(ctx, "tool-recall", new FactsFailure("STATE_SHAPE"));
+          throw new FactsFailure("STATE_SHAPE");
         }
         const state = params.fact_subject !== undefined || params.fact_predicate !== undefined
           ? renderCurrentState(response.current_state) : await current(ctx, "tool-recall");
         check();
+        // A failed facts lane must not emit fact-bearing evidence from the
+        // private request. Retry only through the caller's ordinary search.
+        if (state === UNAVAILABLE) return fallback();
         const normalized = normalizeResults(response, params.maxResults ?? 5);
         return reply(state + "\n" + formatMemoryContext(normalized.results));
       } catch (error) {
         diagnose(ctx, "tool-recall", error);
-        return reply(UNAVAILABLE);
+        return fallback();
       }
     },
   };

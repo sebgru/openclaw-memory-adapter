@@ -465,3 +465,119 @@ test("prompt hook revalidates completed facts after delayed evidence on success 
     }
   }
 });
+
+test("facts failure fallback matches facts-disabled search parameters, formatting and receipts", async () => {
+  const search = {
+    results: [{ id: "public-doc", source: "documents", text: "Ordinary document evidence", score: 0.8 },
+      { id: "second", source: "archive", text: "Outside requested limit" }],
+    warnings: ["Synthetic search warning"], conflicts: ["Synthetic conflict"],
+    coverage: { documents: "searched" }, low_confidence: true,
+    current_state: [{ state: "resolved", value: "PRIVATE FACT STATE" }],
+  };
+  for (const params of [
+    { query: "  document question  " },
+    { query: "document question", scope: "archive", maxResults: 2, fact_subject: "person:private", fact_predicate: "pref.language", include_restricted: true },
+  ]) {
+    const ordinaryParams = Object.fromEntries(Object.entries(params).filter(([key]) => !key.startsWith("fact_") && key !== "include_restricted"));
+    let baseline, baselineCall;
+    const baselineHarness = harness({ plugin: true, config: { facts: { enabled: false }, scope: "documents", maxResults: 1 }, search });
+    try {
+      baseline = await baselineHarness.tools.unified_memory_search.execute("same-call", ordinaryParams);
+      baselineCall = baselineHarness.calls[0];
+    } finally { baselineHarness.close(); }
+    const h = harness({ plugin: true, ctx: { senderIsOwner: undefined }, config: { scope: "documents", maxResults: 1 }, search });
+    try {
+      const result = await h.tools.unified_memory_search.execute("same-call", params);
+      assert.equal(text(result), UNAVAILABLE + "\n" + text(baseline));
+      assert.deepEqual({ ...result.details, receipt: { ...result.details.receipt, timing: undefined } },
+        { ...baseline.details, receipt: { ...baseline.details.receipt, timing: undefined } });
+      assert.equal(h.calls.length, 1);
+      assert.equal(h.calls[0].url, baselineCall.url);
+      assert.deepEqual(h.calls[0].init.headers, baselineCall.init.headers);
+      const query = new URL(h.calls[0].url).searchParams;
+      assert.equal(query.has("fact_subject"), false);
+      assert.equal(query.has("fact_predicate"), false);
+      assert.equal(query.has("include_restricted"), false);
+      assert.equal(h.calls[0].init.headers.authorization, undefined);
+      assert.match(h.logs.join("\n"), /stage=tool-recall reason=OWNER_FLAG_MISSING/);
+      assert.doesNotMatch(JSON.stringify([result, h.logs]), /PRIVATE FACT STATE|synthetic-test-only|person:private|current_state/);
+    } finally { h.close(); }
+  }
+});
+
+for (const mode of ["http", "timeout", "unknown", "json", "explicit-state", "implicit-state", "implicit-http", "stale", "secret"]) {
+  test(`authorized facts ${mode} failure falls back without private markers, credential or state`, async () => {
+    const explicit = !mode.startsWith("implicit");
+    const h = harness({ plugin: true, config: { timeoutMs: 5 }, fetch: async (url, init) => {
+      const privateRequest = init.headers.authorization !== undefined;
+      if (!privateRequest) return response({ results: [{ source: "main", text: "Normal fallback evidence" }],
+        current_state: [{ state: "resolved", value: "PRIVATE FALLBACK STATE" }] });
+      assert.equal(init.headers.authorization, "Bearer synthetic-test-only");
+      if (mode === "http" || mode === "implicit-http" && url.includes("/facts/")) return { ok: false, status: 503 };
+      if (mode === "timeout") {
+        await new Promise((resolve, reject) => {
+          const keepAlive = setTimeout(resolve, 100);
+          init.signal.addEventListener("abort", () => { clearTimeout(keepAlive); reject(init.signal.reason); }, { once: true });
+        });
+        throw new Error("timeout did not abort");
+      }
+      if (mode === "unknown") throw new Error("PRIVATE TRANSPORT DETAILS");
+      if (mode === "json") return { ok: true, json: async () => { throw new SyntaxError("PRIVATE RESPONSE BODY"); } };
+      if (mode === "explicit-state" || mode === "implicit-state" && url.includes("/facts/")) return response({});
+      if (mode === "stale") h.ctx.senderIsOwner = false;
+      return response({ results: [{ text: "PRIVATE FACT-LANE EVIDENCE", source: "facts" }],
+        current_state: [{ state: "resolved", value: "PRIVATE CURRENT STATE" }] });
+    } });
+    try {
+      if (mode === "secret") delete globalThis.__factsTestCredential;
+      const result = await h.tools.unified_memory_search.execute("call", { query: "question", scope: "main", maxResults: 1,
+        ...(explicit ? { fact_subject: "person:private", fact_predicate: "pref.language" } : {}) });
+      assert.ok(text(result).startsWith(UNAVAILABLE + "\n"));
+      assert.match(text(result), /Normal fallback evidence/);
+      assert.equal(result.details.receipt.status, "found");
+      const fallbackCalls = h.calls.filter(({ init }) => init.headers.authorization === undefined);
+      assert.equal(fallbackCalls.length, 1);
+      assert.equal(fallbackCalls[0], h.calls.at(-1));
+      const query = new URL(fallbackCalls[0].url).searchParams;
+      assert.deepEqual(Object.fromEntries(query), { q: "question", limit: "1", scope: "main", profile: "tool" });
+      const reason = { http: "HTTP_503", timeout: "TIMEOUT", unknown: "UNKNOWN", json: "RESPONSE_SHAPE",
+        "explicit-state": "STATE_SHAPE", "implicit-state": "STATE_SHAPE", "implicit-http": "HTTP_503", stale: "OWNER_FALSE", secret: "SECRET_UNPREPARED" }[mode];
+      assert.equal(h.logs.length, 1);
+      assert.match(h.logs[0], new RegExp(`stage=tool-recall reason=${reason} hints=`));
+      assert.doesNotMatch(JSON.stringify([result, h.logs]), /PRIVATE|synthetic-test-only|person:private|current_state/);
+    } finally { h.close(); }
+  });
+}
+
+test("facts fallback empty and failed searches retain normal search outcomes", async () => {
+  for (const fail of [false, true]) {
+    const h = harness({ plugin: true, ctx: { senderIsOwner: false }, fetch: async () => {
+      if (fail) throw new Error("ordinary search failed");
+      return response({ results: [] });
+    } });
+    try {
+      const result = await h.tools.unified_memory_search.execute("call", { query: "question" });
+      assert.equal(text(result), UNAVAILABLE + "\n" + (fail
+        ? "Memory retrieval unavailable; do not assert facts from memory without verifying through another source." : "No memory results."));
+      assert.equal(result.details.receipt.status, fail ? "unavailable" : "absent");
+      assert.equal(h.calls.length, 1);
+    } finally { h.close(); }
+  }
+});
+
+test("authorized happy-path explicit and implicit recall stays unchanged and never falls back", async () => {
+  for (const explicit of [false, true]) {
+    const h = harness({ plugin: true, current: { state: "resolved", value: "PRIVATE HAPPY STATE" },
+      search: { results: [{ source: "main", text: "Original evidence" }], current_state: [{ state: "resolved", value: "PRIVATE HAPPY STATE" }] } });
+    try {
+      const result = await h.tools.unified_memory_search.execute("call", { query: "question",
+        ...(explicit ? { fact_subject: "person:owner", fact_predicate: "pref.language" } : {}) });
+      assert.match(text(result), /^Current facts .*PRIVATE HAPPY STATE.*\nRelevant external memory/s);
+      assert.match(text(result), /Original evidence/);
+      assert.equal(result.details, undefined);
+      assert.equal(h.calls.length, explicit ? 1 : 19);
+      assert.ok(h.calls.every(({ init }) => init.headers.authorization === "Bearer synthetic-test-only"));
+      assert.deepEqual(h.logs, []);
+    } finally { h.close(); }
+  }
+});
