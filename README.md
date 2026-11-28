@@ -118,6 +118,79 @@ The plugin is configured through OpenClaw's normal plugin configuration:
 }
 ```
 
+## Native memory routing (`nativeRouting`, default off)
+
+With `nativeRouting.enabled: true` the adapter stays the single search entry
+point but splits the work by tier:
+
+| Tier | Served by |
+|---|---|
+| curated memory, notes (`memory/`, `MEMORY.md`), optionally session transcripts | native OpenClaw memory (`memory-core`) |
+| documents, session archive, registered outputs/projects | external memory service |
+
+When the flag is absent or `false`, nothing below applies and every search
+goes to the external service exactly as before.
+
+```json
+"nativeRouting": {
+  "enabled": true,
+  "sources": ["memory"],
+  "lowConfidenceScore": 0.35,
+  "timeoutMs": 2500,
+  "promptServiceScope": "none"
+}
+```
+
+| Key | Default | Meaning |
+|---|---|---|
+| `enabled` | `false` | Turns routing on. |
+| `sources` | `["memory"]` | Native corpora to search: `memory` and/or `sessions`. |
+| `lowConfidenceScore` | `0.35` | Native results whose best score is below this are disclosed as low confidence. `0` disables the check. |
+| `timeoutMs` | `2500` | Native lane budget (250–6000 ms), also capped by `timeoutMs`. |
+| `promptServiceScope` | `"none"` | Extra service lane for every prompt-hook turn: `none`, `main` or `all`. |
+
+**`unified_memory_search`.** `scope: "all"` and `scope: "main"` run the
+native lane and the service lane (same scope) in parallel. Results alternate
+between lanes, native first, because scores from the two engines are not
+comparable. Service copies of native-owned paths (`memory/`, `MEMORY.md`,
+`sessions/`) are dropped, except for identifier-like queries (snake_case or
+dotted IDs, ticket codes, `#123`, versions, commit hashes, e-mail addresses,
+file names, mixed letter/digit tokens, or at most three words), where the
+lexical service lane may hold the only exact hit. `scope: "documents"` and
+`scope: "archive"` stay on the service only.
+
+**Prompt hook.** Native memory is the baseline. The service is not searched
+with `scope=all` on every turn (all-scope on long prompts was measured at
+several seconds). It is searched only when:
+
+- the topic/entity trigger starts its `scope=documents` lane (unchanged);
+- the prompt is identifier-like (`scope=main`, same timeout);
+- an explicitly named entity found no evidence (targeted lookup, unchanged);
+- `promptServiceScope` is `main` or `all`;
+- native memory failed: a `scope=main` fallback runs within the remaining budget.
+
+**Native access.** The adapter calls the host's provider-neutral memory lease
+(`getActiveMemoryProvider` from `openclaw/plugin-sdk/memory-host-search`)
+with the current turn's session key, session ID, sandbox state and the
+host-minted memory audience from the hook/tool context. It never builds
+authority itself; without a session key the native lane fails closed. The
+selected memory plugin applies its own visibility rules to session hits.
+This SDK subpath is exported by OpenClaw 2026.11.4 but documented as a
+private-local facade, so it can change without notice; see COMPATIBILITY.md.
+
+**Disclosure (R8).** Native memory emits no low-confidence signal. The adapter
+flags a native result set when its best score is below `lowConfidenceScore`.
+The merged answer is flagged only when every lane that contributed is weak,
+and a fixed notice is added in both legacy and receipt mode. The default 0.35
+comes from a 20-case comparison (no-match top-1 0.22/0.32 vs lowest relevant
+top-1 0.35); it is not validated on a larger no-match set and should be
+tuned before relying on it. When the native lane fails, a fixed "native
+memory unavailable" notice is added and receipts never report a verified
+absence for that turn.
+
+Routing does not enable `memory-core` or hide its own `memory_search` tool.
+Both are Gateway configuration decisions.
+
 ## Topic-triggered document search
 
 Personal reference facts (address, children, school, bank, insurance, car,

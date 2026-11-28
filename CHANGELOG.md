@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.14.0
+
+- Add disabled-by-default native memory routing (`nativeRouting`). When enabled, `unified_memory_search` (scopes `all`/`main`) and the prompt hook search curated memory and notes (optionally session transcripts) through OpenClaw's native memory provider lease, called with the turn's own session authority and host-minted memory audience. Documents, archive and outputs/projects stay on the external service; identifier-like queries run both lanes and keep the service's exact hits.
+- With routing on, the prompt hook no longer runs a service `scope=all` search on every turn. The service runs only for the topic-triggered documents lane, identifier-like prompts (`scope=main`), the targeted entity lookup, an optional `promptServiceScope`, or as a `scope=main` fallback when native memory fails.
+- Add low-confidence disclosure for native results: a result set whose best score is below `nativeRouting.lowConfidenceScore` (default 0.35, needs validation on a larger no-match set) is flagged with a fixed notice in legacy and receipt mode. Native failures add a fixed unavailable notice and never yield verified-absence receipts.
+- Receipts accept the exact list of searched sources for routed searches. No behaviour changes while `nativeRouting.enabled` is unset or false.
+
 ## 1.13.0
 
 - Preserve ordinary unified memory search when private facts are unauthorized or fail (including timeouts and malformed state). Prepend the facts-only unavailable notice, retain normal search parameters, formatting and receipts, and log the bounded reason code. Fallback requests use neither fact markers nor the facts bearer token and never emit fact state. Authorized successful recall and authorization rules are unchanged.

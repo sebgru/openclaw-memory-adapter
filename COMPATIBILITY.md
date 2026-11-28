@@ -222,3 +222,25 @@ After adapter install + enable (prepared credential, reachable backend, tools en
 These are source-backed compatibility verdicts, not live acceptance. Both recall
 entry points have synthetic owner/root fallback, denial and failure regressions.
 No host changes, install, restart or live facts requests were made.
+
+## Native memory routing (1.14.0, default off)
+
+`nativeRouting` imports `openclaw/plugin-sdk/memory-host-search` at call time
+and uses only `getActiveMemoryProvider` (provider-neutral lease: `search`,
+`close`, `capabilities.sources`). OpenClaw 2026.11.4 exports this subpath in
+its package and resolves it for external plugins, but the SDK docs label it a
+private-local bundled facade. Treat it as an unstable dependency:
+
+- Re-test after every OpenClaw upgrade (import succeeds, lease opens with
+  session authority, `search` returns `hits` with `excerpt`/`score`/`reference`).
+- If the import or lease fails, the native lane fails closed: the prompt hook
+  falls back to the service `scope=main` search and both paths add a
+  "native memory unavailable" notice.
+- The documented public alternative is Gateway `memory.search` with
+  `version: 2` over an authenticated operator connection. In-process
+  `api.runtime.gateway.request` is limited to bundled or trusted-official
+  plugins on 2026.11.4, so it is not available to this adapter.
+
+Smoke-tested 2026-11-28 against OpenClaw 2026.11.4 in an isolated state
+directory (standalone process, legacy memory-core adapter path), not inside a
+running Gateway.

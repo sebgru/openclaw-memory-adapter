@@ -4,6 +4,8 @@ import { LOW_CONFIDENCE_NOTICE, buildMemoryContextDetails, formatMemoryContext, 
 import { buildReceipt, formatReceiptNotice, receiptTraceSummary } from "./src/receipt.js";
 import { detectTopics, mergeDocumentLane, topicTriggerSettings } from "./src/topic-trigger.js";
 import { expandLinkedAlias, extractEntityTarget, hasEntityEvidence, isDocumentIdentifier, mergeSearchResponses } from "./src/entity-query.js";
+import { NATIVE_UNAVAILABLE_NOTICE, createNativeSearch, nativeRoutingSettings } from "./src/native.js";
+import { ROUTED_LOW_CONFIDENCE_NOTICE, requestedSources, routedPromptBaseline, routedToolSearch } from "./src/routing.js";
 
 const FAILURE_NOTICE = "Memory retrieval unavailable; do not assert facts from memory without verifying through another source.";
 const TOPIC_DOCUMENTS_NOTICE = "The focused document search for this turn's topic was unavailable; the general search still ran, so do not claim that no matching document exists.";
@@ -78,6 +80,11 @@ export default definePluginEntry({
   register(api) {
     const config = api.pluginConfig ?? {};
     const facts = createFacts(api, config);
+    // Off by default: without `nativeRouting.enabled` every search below goes
+    // to the external service exactly as before.
+    const routing = nativeRoutingSettings(config.nativeRouting);
+    const searchNative = routing.enabled ? createNativeSearch(api) : undefined;
+    const lowConfidenceNotice = routing.enabled ? ROUTED_LOW_CONFIDENCE_NOTICE : LOW_CONFIDENCE_NOTICE;
     api.on("before_prompt_build", async (event, ctx) => {
       if (!eligible(event, ctx, config)) return undefined;
       // Some hosts omit senderIsOwner here. Facts must then fail closed; never
@@ -110,12 +117,26 @@ export default definePluginEntry({
             timeoutMs: Math.min(topicSettings.timeoutMs ?? Infinity, configuredTimeoutMs, MAX_TARGETED_SEARCH_MS),
           }, undefined, { signal: documentsAbort.signal }).then((response) => ({ response }), () => ({ failed: true }))
           : undefined;
-        let retrieval = await searchUnified(event.prompt, {
-          ...config,
-          scope,
-          profile: "prompt",
-          timeoutMs: boundedTimeoutMs,
-        });
+        // With native routing the baseline is native memory (plus a bounded
+        // service lane only for identifier-like prompts or when configured),
+        // never a service scope=all search on every turn.
+        let retrieval = routing.enabled
+          ? await routedPromptBaseline({
+            prompt: event.prompt,
+            ctx,
+            config,
+            settings: routing,
+            searchNative,
+            searchService: searchUnified,
+            timeoutMs: boundedTimeoutMs,
+          })
+          : await searchUnified(event.prompt, {
+            ...config,
+            scope,
+            profile: "prompt",
+            timeoutMs: boundedTimeoutMs,
+          });
+        const nativeUnavailable = retrieval.nativeUnavailable === true;
         const documents = await documentsLane;
         let targetedSearchUnavailable = false;
         const evidenceResults = [...retrieval.results, ...(documents?.response?.results ?? [])];
@@ -186,15 +207,16 @@ export default definePluginEntry({
           const entityWarning = targetedSearchUnavailable
             ? "The targeted memory search for an explicitly named entity was unavailable; do not claim that entity was absent."
             : "";
-          const lowConfidenceWarning = context && lowConfidence ? LOW_CONFIDENCE_NOTICE : "";
+          const lowConfidenceWarning = context && lowConfidence ? lowConfidenceNotice : "";
           const topicWarning = documents?.failed ? TOPIC_DOCUMENTS_NOTICE : "";
-          const prependContext = [factNotice, context, lowConfidenceWarning, entityWarning, topicWarning].filter(Boolean).join("\n\n");
+          const nativeWarning = nativeUnavailable ? NATIVE_UNAVAILABLE_NOTICE : "";
+          const prependContext = [factNotice, context, lowConfidenceWarning, entityWarning, topicWarning, nativeWarning].filter(Boolean).join("\n\n");
           return prependContext ? { prependContext } : undefined;
         }
         const { text: context, truncated, includedCount } = buildMemoryContextDetails(results, maxContextLength);
         const receipt = buildReceipt({
           turnId,
-          scope,
+          scope: routing.enabled ? (requestedSources(coverage) ?? scope) : scope,
           startedAt,
           endedAt: Date.now(),
           resultCount: results.length,
@@ -207,9 +229,14 @@ export default definePluginEntry({
           lowConfidence,
         });
         logReceiptTrace(api, receipt);
-        const notice = formatReceiptNotice(receipt);
+        const notice = formatReceiptNotice(receipt, routing.enabled ? { lowConfidenceNotice } : undefined);
         const hasUsableContext = includedCount > 0;
-        const prependContext = [factNotice, hasUsableContext ? context : "", notice].filter(Boolean).join("\n\n");
+        const prependContext = [
+          factNotice,
+          hasUsableContext ? context : "",
+          notice,
+          nativeUnavailable ? NATIVE_UNAVAILABLE_NOTICE : "",
+        ].filter(Boolean).join("\n\n");
         return { prependContext };
       } catch {
         documentsAbort.abort();
@@ -245,11 +272,24 @@ export default definePluginEntry({
           const turnId = (typeof _toolCallId === "string" && _toolCallId.slice(0, 128)) || globalThis.crypto.randomUUID();
           const startedAt = Date.now();
           try {
-            const { results, warnings, conflicts, coverage, lowConfidence } = await searchUnified(params.query, { ...config, scope, profile: "tool", maxResults: params.maxResults ?? config.maxResults });
+            const maxResults = params.maxResults ?? config.maxResults;
+            const routed = routing.enabled
+              ? await routedToolSearch({
+                query: params.query,
+                scope,
+                ctx,
+                config: { ...config, maxResults },
+                settings: routing,
+                searchNative,
+                searchService: searchUnified,
+              })
+              : undefined;
+            const { results, warnings, conflicts, coverage, lowConfidence } = routed
+              ?? await searchUnified(params.query, { ...config, scope, profile: "tool", maxResults });
             const { text: context, truncated, includedCount } = buildMemoryContextDetails(results);
             const receipt = buildReceipt({
               turnId,
-              scope,
+              scope: routed ? (requestedSources(coverage) ?? scope) : scope,
               startedAt,
               endedAt: Date.now(),
               resultCount: results.length,
@@ -266,14 +306,23 @@ export default definePluginEntry({
               textParts.push("No memory results.");
             } else {
               textParts.push(context);
-              if (receipt.lowConfidence) textParts.push(LOW_CONFIDENCE_NOTICE);
+              if (receipt.lowConfidence) textParts.push(lowConfidenceNotice);
             }
+            if (routed?.nativeUnavailable) textParts.push(NATIVE_UNAVAILABLE_NOTICE);
             if (warnings?.length) {
               textParts.push(`Warnings: ${warnings.slice(0, 3).join("; ")}`);
             }
             return {
               content: [{ type: "text", text: textParts.join("\n") }],
-              details: { scope, results, warnings, conflicts, lowConfidence: receipt.lowConfidence, receipt },
+              details: {
+                scope,
+                results,
+                warnings,
+                conflicts,
+                lowConfidence: receipt.lowConfidence,
+                receipt,
+                ...(routed ? { routing: { native: !routed.nativeUnavailable, identifierLike: routed.identifierLike } } : {}),
+              },
             };
           } catch (error) {
             const receipt = buildReceipt({ turnId, scope, startedAt, endedAt: Date.now(), error: true });
