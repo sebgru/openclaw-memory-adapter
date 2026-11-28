@@ -118,6 +118,101 @@ The plugin is configured through OpenClaw's normal plugin configuration:
 }
 ```
 
+## Native memory routing (`nativeRouting`, default off)
+
+With `nativeRouting.enabled: true` the adapter stays the single search entry
+point but splits the work by tier:
+
+| Tier | Served by |
+|---|---|
+| curated memory, notes (`memory/`, `MEMORY.md`), optionally session transcripts | native OpenClaw memory (`memory-core`) |
+| documents, session archive, registered outputs/projects | external memory service |
+
+When the flag is absent or `false`, nothing below applies and every search
+goes to the external service exactly as before.
+
+```json
+"nativeRouting": {
+  "enabled": true,
+  "sources": ["memory"],
+  "sourceQuota": { "memory": 3, "sessions": 2 },
+  "lowConfidenceMode": "off",
+  "lowConfidenceScore": 0.35,
+  "timeoutMs": 2500,
+  "promptServiceScope": "none"
+}
+```
+
+| Key | Default | Meaning |
+|---|---|---|
+| `enabled` | `false` | Turns routing on. |
+| `sources` | `["memory"]` | Native corpora to search: `memory` and/or `sessions`. |
+| `sourceQuota` | `{ "memory": 3, "sessions": 2 }` | With both `sources`, slots per corpus (0–10 each). Each corpus is searched separately; free slots are filled by score. |
+| `lowConfidenceMode` | `"off"` | Native low-confidence rule: `off`, `score` or `lexical`. See Disclosure. |
+| `lowConfidenceScore` | `0.35` | Score threshold used by the `score` and `lexical` modes. `0` disables both. |
+| `timeoutMs` | `2500` | Native lane budget (250–6000 ms), also capped by `timeoutMs`. |
+| `promptServiceScope` | `"none"` | Extra service lane for every prompt-hook turn: `none`, `main` or `all`. |
+
+**`unified_memory_search`.** `scope: "all"` and `scope: "main"` run the
+native lane and the service lane (same scope) in parallel. Results alternate
+between lanes, native first, because scores from the two engines are not
+comparable. Service copies of native-owned paths (`memory/`, `MEMORY.md`,
+`sessions/`) are dropped, except for identifier-like queries (snake_case or
+dotted IDs, ticket codes, `#123`, versions, commit hashes, e-mail addresses,
+file names, mixed letter/digit tokens, or at most three words), where the
+lexical service lane may hold the only exact hit. `scope: "documents"` and
+`scope: "archive"` stay on the service only.
+
+**Prompt hook.** Native memory is the baseline. The service is not searched
+with `scope=all` on every turn (all-scope on long prompts was measured at
+several seconds). It is searched only when:
+
+- the topic/entity trigger starts its `scope=documents` lane (unchanged);
+- the prompt is identifier-like (`scope=main`, same timeout);
+- an explicitly named entity found no evidence (targeted lookup, unchanged);
+- `promptServiceScope` is `main` or `all`;
+- native memory failed: a `scope=main` fallback runs within the remaining budget.
+
+**Native access.** The adapter calls the host's provider-neutral memory lease
+(`getActiveMemoryProvider` from `openclaw/plugin-sdk/memory-host-search`)
+with the current turn's session key, session ID, sandbox state and the
+host-minted memory audience from the hook/tool context. It never builds
+authority itself; without a session key the native lane fails closed. The
+selected memory plugin applies its own visibility rules to session hits.
+This SDK subpath is exported by OpenClaw 2026.11.4 but documented as a
+private-local facade, so it can change without notice; see COMPATIBILITY.md.
+
+**Session quota.** When `sources` contains both `memory` and `sessions`, the
+native lane runs one search per corpus on the same lease and keeps up to
+`sourceQuota.memory` notes and `sourceQuota.sessions` session chunks, each
+in provider rank order. Slots a corpus cannot fill go to the best leftovers
+of the other, and the selection is ordered by score. Without a split,
+session chunks took most top-5 slots in a 51-query evaluation (48/51); the
+simulated 3+2 split reached 34/43 top-3 against 24/43 unmixed.
+
+**Disclosure (R8).** Native memory emits no low-confidence signal, and an
+absolute score is not a reliable one: with session chunks indexed, top scores
+for no-match queries (0.35–0.44) overlap the lowest correct hits (0.445).
+`lowConfidenceMode` therefore defaults to `off`.
+
+- `score`: flag when the best native score is below `lowConfidenceScore`.
+  This only separated no-match from hits in a 20-case set without sessions.
+- `lexical`: flag only when both signals agree: no returned excerpt or path
+  shares a content term with the query (terms of four or more characters,
+  minus common English/German stopwords, matched on their first five
+  characters), and the best score is below `lowConfidenceScore`. A strong
+  cross-language semantic hit is therefore not flagged. This rule is not yet
+  validated on a labelled no-match set.
+
+When a mode flags native results, the merged answer is flagged only when every
+contributing lane is weak, with a fixed notice in legacy and receipt mode.
+Independently of the mode, a failed native lane adds a fixed "native memory
+unavailable" notice, and receipts never report a verified absence for that
+turn.
+
+Routing does not enable `memory-core` or hide its own `memory_search` tool.
+Both are Gateway configuration decisions.
+
 ## Topic-triggered document search
 
 Personal reference facts (address, children, school, bank, insurance, car,
