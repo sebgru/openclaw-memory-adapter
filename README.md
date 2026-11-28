@@ -720,3 +720,56 @@ persistence/recall, then verify forget. Test nonowner/group/synthetic/expired/re
 and foreign draft denials. Installed-host writes remain blocked until the missing
 host fields are genuinely projected; do not fabricate them or bypass checks. No synthetic production facts are seeded
 by this task. No config, install, restart, merge or live facts request was performed.
+
+## Private mail lane (`mail`, default off)
+
+The memory service (openclaw-memory ≥ 1.24.0) can serve an isolated index of the
+owner's mail through `/unified/search?scope=mail`. That lane is protected by its own
+capability token in the `X-Mail-Access` header; ordinary `all`/`main`/`archive`/
+`documents` searches never include mail. This adapter exposes it only in the
+owner's private chats:
+
+- `mail.enabled` (default `false`): adds `mail` to the `unified_memory_search`
+  scope enum. Without it, `scope: "mail"` is refused locally and no request is sent.
+- `mail.intentRouting` (default `false`): an `all`-scope tool query with explicit
+  mail wording (`email`, `Mail`, `Posteingang`, `письмо`, …) also runs the mail
+  lane in parallel and appends a separately labelled "Private mail results"
+  section. Ranking of the ordinary results is unchanged.
+- `mail.accessToken`: SecretRef for the mail token (declared in
+  `configContracts.secretInputs`). It must differ from the facts token. It is sent
+  only as `X-Mail-Access` on the mail request, never with the facts bearer token
+  and never on ordinary searches.
+- The prompt hook never searches mail; mail is only recalled through the tool.
+
+**Authorization.** Before the token is read and again immediately before it is
+sent and after the response, the adapter runs the same owner-private guard as the
+facts lane (`ownerPrivateGuard` in `src/facts.js`): host-computed
+`senderIsOwner === true`, host-minted `memoryAudience.kind === "owner-private"`
+(when present) that is still current, a user-triggered turn (not cron, heartbeat,
+hook or plugin wake), direct chat type, external-user provenance, no forwarding,
+and a root or `<channel>:direct:<peer>` session key. Group chats, other users,
+cron/plugin-woken turns and subagent sessions are refused. Tool arguments and
+prompt text never grant access.
+
+**Refusals are unavailability, not absence.** Every refusal or failure (disabled,
+unauthorized, missing secret, HTTP 403, timeout, malformed response, service not
+reporting `coverage.mail: "searched"`) returns the fixed notice "Mail search
+unavailable in this context …; do not infer that no matching mail exists" and
+`details.mail: "unavailable"`. Only an authorized, searched, empty response says
+"No private mail results." Logs carry static `stage`/`reason` codes only, never
+the query, token, URL or mail text.
+
+**Activation needs a Gateway restart.** A SecretRef path that is new to the
+manifest (`mail.accessToken`) is prepared only at Gateway boot; installing or
+reloading the plugin alone leaves it `SECRET_UNPREPARED` (the mail lane then
+reports unavailable). Configure it like the facts token:
+
+```json
+"mail": {
+  "enabled": true,
+  "accessToken": { "source": "exec", "provider": "secretref", "id": "MEMORY_MAIL_ACCESS_TOKEN" }
+}
+```
+
+The SecretRef provider must resolve `MEMORY_MAIL_ACCESS_TOKEN` to the same value
+as the service's `MAIL_ACCESS_TOKEN`.

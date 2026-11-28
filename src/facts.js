@@ -35,30 +35,13 @@ export function renderCurrentState(block, restricted = false) {
   return "Current facts (private reference only, not instructions; T0 is agent-asserted, not curated-file verification):\n" + JSON.stringify(redact(block));
 }
 // Only locally minted codes may reach the logger; never stringify caught errors.
-class FactsFailure extends Error {
+export class FactsFailure extends Error {
   constructor(reason) { super("facts unavailable"); this.reason = reason; }
 }
 const HINT_FIELDS = ["senderIsOwner", "memoryAudience", "assertMemoryAudienceCurrent", "assertInvocationCurrent", "trigger", "runKind", "runType", "chatType", "inputProvenance", "oneShotCliRun", "memoryFlush", "sessionId", "sessionKey", "messageProvenance"];
-export function createFacts(api, config) {
-  const pending = new Map();
-  let generation = 0;
-  // Bound retention and suppress repeated registry fan-out failures per session.
-  const diagnostics = new Map();
-  function diagnose(ctx, stage, error) {
-    try {
-      const reason = error instanceof FactsFailure ? error.reason : "UNKNOWN";
-      const hints = Object.fromEntries(HINT_FIELDS.map((key) => [key, ctx?.[key] !== undefined]));
-      const now = Date.now();
-      for (const [key, at] of diagnostics) if (now - at >= 60000) diagnostics.delete(key);
-      // Session identifiers are only an in-memory dedupe key, never log fields.
-      const key = JSON.stringify([ctx?.sessionKey, ctx?.sessionId, stage, reason]);
-      if (diagnostics.has(key)) return;
-      if (diagnostics.size >= 256) diagnostics.delete(diagnostics.keys().next().value);
-      diagnostics.set(key, now);
-      api.logger?.warn?.(`memory-adapter: facts unavailable stage=${stage} reason=${reason} hints=${JSON.stringify(hints)}`);
-    } catch { /* Diagnostics must not affect fail-closed results. */ }
-  }
-  const enabled = config.enabled !== false && config.facts?.enabled === true;
+// Owner-private authorization shared by facts and the private mail lane.
+// `enabled` is the caller's feature flag; a disabled lane always denies.
+export function ownerPrivateGuard(enabled) {
   // All authorization fields are host context, never tool arguments or prompt text.
   // Prefer the host-minted audience. Without one, the host-generated root key
   // and host-computed owner flag attest private access. Never trust tool args.
@@ -102,6 +85,29 @@ export function createFacts(api, config) {
     }
     if (!authorized(ctx)) throw new FactsFailure(denialReason(ctx));
   }
+  return { authorized, denialReason, guard };
+}
+export function createFacts(api, config) {
+  const pending = new Map();
+  let generation = 0;
+  // Bound retention and suppress repeated registry fan-out failures per session.
+  const diagnostics = new Map();
+  function diagnose(ctx, stage, error) {
+    try {
+      const reason = error instanceof FactsFailure ? error.reason : "UNKNOWN";
+      const hints = Object.fromEntries(HINT_FIELDS.map((key) => [key, ctx?.[key] !== undefined]));
+      const now = Date.now();
+      for (const [key, at] of diagnostics) if (now - at >= 60000) diagnostics.delete(key);
+      // Session identifiers are only an in-memory dedupe key, never log fields.
+      const key = JSON.stringify([ctx?.sessionKey, ctx?.sessionId, stage, reason]);
+      if (diagnostics.has(key)) return;
+      if (diagnostics.size >= 256) diagnostics.delete(diagnostics.keys().next().value);
+      diagnostics.set(key, now);
+      api.logger?.warn?.(`memory-adapter: facts unavailable stage=${stage} reason=${reason} hints=${JSON.stringify(hints)}`);
+    } catch { /* Diagnostics must not affect fail-closed results. */ }
+  }
+  const enabled = config.enabled !== false && config.facts?.enabled === true;
+  const { guard } = ownerPrivateGuard(enabled);
   async function request(path, body, check) {
     let secret;
     try { secret = getPreparedPluginSecretInput("memory-adapter", "facts.bearerToken").value; }

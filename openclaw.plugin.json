@@ -243,6 +243,40 @@
             ]
           }
         }
+      },
+      "mail": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": false
+          },
+          "intentRouting": {
+            "type": "boolean",
+            "default": false
+          },
+          "accessToken": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "source": {
+                "const": "exec"
+              },
+              "provider": {
+                "const": "secretref"
+              },
+              "id": {
+                "const": "MEMORY_MAIL_ACCESS_TOKEN"
+              }
+            },
+            "required": [
+              "source",
+              "provider",
+              "id"
+            ]
+          }
+        }
       }
     }
   },
@@ -251,6 +285,11 @@
       "paths": [
         {
           "path": "facts.bearerToken",
+          "expected": "string",
+          "ownerKind": "capability"
+        },
+        {
+          "path": "mail.accessToken",
           "expected": "string",
           "ownerKind": "capability"
         }
