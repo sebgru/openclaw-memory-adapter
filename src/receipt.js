@@ -14,6 +14,11 @@ function boundedMessages(messages, maxEntries) {
 }
 
 function sourcesForScope(scope) {
+  // Routed searches pass the exact list of sources a lane was asked to search.
+  if (Array.isArray(scope)) {
+    const sources = KNOWN_SOURCES.filter((source) => scope.includes(source));
+    return sources.length ? sources : [...KNOWN_SOURCES];
+  }
   if (!scope || scope === "all") return [...KNOWN_SOURCES];
   if (KNOWN_SOURCES.includes(scope)) return [scope];
   return [...KNOWN_SOURCES];
@@ -153,7 +158,7 @@ const STATUS_NOTICES = {
  * receipts can still carry a notice when coverage is uncertain or nothing
  * was actually attached to the turn.
  */
-function formatReceiptNotice(receipt) {
+function formatReceiptNotice(receipt, { lowConfidenceNotice } = {}) {
   const parts = [];
   const base = STATUS_NOTICES[receipt.status];
   if (base) parts.push(base);
@@ -164,7 +169,9 @@ function formatReceiptNotice(receipt) {
     );
   }
 
-  if (receipt.lowConfidence) {
+  if (receipt.lowConfidence && lowConfidenceNotice) {
+    parts.push(lowConfidenceNotice);
+  } else if (receipt.lowConfidence) {
     parts.push(
       "The memory service flagged these results as low confidence (no lexical match, weak semantic similarity): treat them as weak hints that are probably not relevant, not as facts. This is neither a verified absence nor a retrieval failure.",
     );

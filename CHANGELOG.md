@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+- Add a disabled-by-default private mail lane (`mail.enabled`). `unified_memory_search` gains `scope: "mail"`, which calls the memory service's protected `/unified/search?scope=mail` lane with the new `mail.accessToken` SecretRef sent as `X-Mail-Access`. Optional `mail.intentRouting` appends a labelled mail section to `all`-scope queries with explicit mail wording. The prompt hook never searches mail.
+- The mail token is sent only after the facts owner-private guard (now shared as `ownerPrivateGuard`) passes before and after the request: group chats, other users, cron/heartbeat/plugin-woken turns, forwarded input and subagent sessions are refused. Refusals and failures are disclosed as unavailable, never as "no mail"; logs carry static reason codes only.
+- Requires openclaw-memory 1.24.0+ with `MAIL_ACCESS_TOKEN` configured. **Activation needs a Gateway restart**: SecretRef paths added to the manifest after Gateway boot are not prepared by a plugin install/reload (the same applied to `facts.bearerToken`).
+
+## 1.14.0
+
+- Add disabled-by-default native memory routing (`nativeRouting`). When enabled, `unified_memory_search` (scopes `all`/`main`) and the prompt hook search curated memory and notes (optionally session transcripts) through OpenClaw's native memory provider lease, called with the turn's own session authority and host-minted memory audience. Documents, archive and outputs/projects stay on the external service; identifier-like queries run both lanes and keep the service's exact hits.
+- With routing on, the prompt hook no longer runs a service `scope=all` search on every turn. The service runs only for the topic-triggered documents lane, identifier-like prompts (`scope=main`), the targeted entity lookup, an optional `promptServiceScope`, or as a `scope=main` fallback when native memory fails.
+- Add a per-source quota for native results (`nativeRouting.sourceQuota`, default 3 notes + 2 session chunks): with both corpora configured, each is searched separately, then merged by score with free slots filled from leftovers, so session chunks cannot crowd out notes.
+- Add native low-confidence disclosure via `nativeRouting.lowConfidenceMode`, default `off` because an absolute score does not separate no-match from correct hits once sessions are indexed: `score` (best score below `lowConfidenceScore`) or `lexical` (no query-term overlap and a weak score; both must agree). Neither rule is validated on a labelled no-match set. Native failures always add a fixed unavailable notice and never yield verified-absence receipts.
+- Receipts accept the exact list of searched sources for routed searches. No behaviour changes while `nativeRouting.enabled` is unset or false.
+
 ## 1.13.0
 
 - Preserve ordinary unified memory search when private facts are unauthorized or fail (including timeouts and malformed state). Prepend the facts-only unavailable notice, retain normal search parameters, formatting and receipts, and log the bounded reason code. Fallback requests use neither fact markers nor the facts bearer token and never emit fact state. Authorized successful recall and authorization rules are unchanged.
