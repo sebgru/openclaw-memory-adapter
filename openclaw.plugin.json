@@ -164,6 +164,33 @@
               "memory"
             ]
           },
+          "lowConfidenceMode": {
+            "type": "string",
+            "enum": [
+              "off",
+              "score",
+              "lexical"
+            ],
+            "default": "off"
+          },
+          "sourceQuota": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "memory": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 10,
+                "default": 3
+              },
+              "sessions": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 10,
+                "default": 2
+              }
+            }
+          },
           "lowConfidenceScore": {
             "type": "number",
             "minimum": 0,

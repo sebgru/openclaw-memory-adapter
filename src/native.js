@@ -13,6 +13,9 @@
  */
 
 const DEFAULT_LOW_CONFIDENCE_SCORE = 0.35;
+const VALID_LOW_CONFIDENCE_MODES = ["off", "score", "lexical"];
+const DEFAULT_SOURCE_QUOTA = Object.freeze({ memory: 3, sessions: 2 });
+const MAX_SOURCE_QUOTA = 10;
 const DEFAULT_NATIVE_TIMEOUT_MS = 2500;
 const MAX_NATIVE_TIMEOUT_MS = 6000;
 const VALID_NATIVE_SOURCES = ["memory", "sessions"];
@@ -38,10 +41,18 @@ export function nativeRoutingSettings(raw) {
     ? [...new Set(config.sources.filter((source) => VALID_NATIVE_SOURCES.includes(source)))]
     : [];
   const score = Number(config.lowConfidenceScore);
+  const quota = config.sourceQuota && typeof config.sourceQuota === "object" && !Array.isArray(config.sourceQuota)
+    ? config.sourceQuota
+    : {};
+  const quotaOf = (source) => (Number.isInteger(quota[source]) && quota[source] >= 0 && quota[source] <= MAX_SOURCE_QUOTA
+    ? quota[source]
+    : DEFAULT_SOURCE_QUOTA[source]);
   return {
     enabled: config.enabled === true,
     sources: sources.length ? sources : ["memory"],
+    lowConfidenceMode: VALID_LOW_CONFIDENCE_MODES.includes(config.lowConfidenceMode) ? config.lowConfidenceMode : "off",
     lowConfidenceScore: Number.isFinite(score) && score >= 0 && score <= 1 ? score : DEFAULT_LOW_CONFIDENCE_SCORE,
+    sourceQuota: { memory: quotaOf("memory"), sessions: quotaOf("sessions") },
     timeoutMs: Number.isInteger(config.timeoutMs)
       ? Math.min(Math.max(config.timeoutMs, 250), MAX_NATIVE_TIMEOUT_MS)
       : DEFAULT_NATIVE_TIMEOUT_MS,
@@ -122,17 +133,79 @@ export function normalizeNativeHits(hits, maxResults, maxResultTextLength = MAX_
 }
 
 /**
- * Native emits no low-confidence signal (C.3 condition 2). A result set is
- * low confidence when it is non-empty and its best score is below the
- * threshold. A missing score counts as unknown, not as weak. The default
- * 0.35 comes from 20 C.3 cases (no-match top-1 0.22/0.32 vs lowest relevant
- * top-1 0.35) and still needs validation on a larger no-match set.
+ * Score rule: non-empty and best score below the threshold. A missing score
+ * counts as unknown, not as weak. With session chunks indexed, no-match top
+ * scores (0.35-0.44) overlap correct hits (>= 0.445), so this rule alone is
+ * not a reliable signal; see `nativeLowConfidence`.
  */
 export function isNativeLowConfidence(results, threshold) {
   if (!Array.isArray(results) || results.length === 0 || !(threshold > 0)) return false;
   const scores = results.map((result) => result.score).filter((score) => Number.isFinite(score));
   if (scores.length !== results.length) return false;
   return Math.max(...scores) < threshold;
+}
+
+const STOPWORDS = new Set([
+  "about", "after", "also", "been", "before", "could", "does", "from", "have", "into", "just", "like",
+  "more", "please", "should", "that", "their", "them", "then", "there", "these", "they", "this", "what",
+  "when", "where", "which", "while", "with", "would", "your", "today", "yesterday",
+  "aber", "alle", "auch", "dass", "dein", "diese", "dieser", "eine", "einen", "einer", "haben", "hatte",
+  "heute", "gestern", "kann", "mein", "meine", "noch", "oder", "sein", "seine", "sind", "über", "unser",
+  "warum", "welche", "wenn", "werden", "wieso", "wird", "wurde",
+]);
+
+/** Content terms of a query: letters/digits, at least four characters, no stopwords. */
+export function queryTerms(query) {
+  const words = String(query ?? "").toLowerCase().slice(0, 4000).match(/[\p{L}\p{N}]{4,}/gu) ?? [];
+  return [...new Set(words.filter((word) => !STOPWORDS.has(word)))].slice(0, 32);
+}
+
+/**
+ * Lexical rule: no returned excerpt or path shares a content term with the
+ * query. Terms match on their first five characters so German inflection
+ * (Vertrag/Verträge stays a miss, Rechnung/Rechnungen a hit) is partly
+ * tolerated. Queries without content terms are never flagged.
+ */
+export function lacksLexicalEvidence(results, query) {
+  if (!Array.isArray(results) || results.length === 0) return false;
+  const stems = queryTerms(query).map((term) => term.slice(0, 5));
+  if (!stems.length) return false;
+  const haystack = results.map((item) => `${item.text ?? ""} ${item.path ?? ""}`.toLowerCase()).join("\n");
+  return !stems.some((stem) => haystack.includes(stem));
+}
+
+/**
+ * Native emits no low-confidence signal (C.3 condition 2). Modes:
+ * - `off` (default): never flag. A single absolute score does not separate
+ *   no-match from correct hits once sessions are indexed (C.3 follow-up).
+ * - `score`: best score below `lowConfidenceScore` (validated only without
+ *   session chunks).
+ * - `lexical`: no lexical evidence and best score below `lowConfidenceScore`;
+ *   both signals must agree, so cross-language semantic hits with a strong
+ *   score are not flagged. Unvalidated: needs a labelled no-match set.
+ */
+export function nativeLowConfidence(results, query, { mode = "off", score = DEFAULT_LOW_CONFIDENCE_SCORE } = {}) {
+  if (mode === "score") return isNativeLowConfidence(results, score);
+  if (mode === "lexical") return lacksLexicalEvidence(results, query) && isNativeLowConfidence(results, score);
+  return false;
+}
+
+/**
+ * Applies per-source slots to native results: up to `quota.memory` notes and
+ * `quota.sessions` session chunks, each taken in provider rank order, then
+ * free slots are filled from the leftovers of either source by score. The
+ * selection is ordered by score (scores come from one engine). Without the
+ * quota, session chunks took most top-5 slots in the C.3 follow-up.
+ */
+export function applySourceQuota(memoryResults, sessionResults, quota, maxResults) {
+  const memory = memoryResults ?? [];
+  const sessions = sessionResults ?? [];
+  const byScore = (a, b) => (b.score ?? -Infinity) - (a.score ?? -Infinity);
+  const picked = [...memory.slice(0, quota.memory), ...sessions.slice(0, quota.sessions)]
+    .sort(byScore)
+    .slice(0, maxResults);
+  const leftovers = [...memory.slice(quota.memory), ...sessions.slice(quota.sessions)].sort(byScore);
+  return [...picked, ...leftovers.slice(0, Math.max(0, maxResults - picked.length))].sort(byScore);
 }
 
 function raceAbort(promise, signal) {
@@ -160,7 +233,9 @@ export function createNativeSearch(api, { loadHost = defaultLoadHost } = {}) {
     maxResults = 5,
     timeoutMs = DEFAULT_NATIVE_TIMEOUT_MS,
     sources = ["memory"],
+    lowConfidenceMode = "off",
     lowConfidenceScore = DEFAULT_LOW_CONFIDENCE_SCORE,
+    sourceQuota,
     maxQueryLength = 4000,
     maxResultTextLength = MAX_RESULT_TEXT_LENGTH,
     signal: parentSignal,
@@ -206,19 +281,30 @@ export function createNativeSearch(api, { loadHost = defaultLoadHost } = {}) {
       const supported = Array.isArray(provider.capabilities?.sources) ? provider.capabilities.sources : ["memory"];
       const requested = sources.filter((source) => supported.includes(source));
       if (!requested.length) throw new Error("native memory provider does not serve the requested sources");
-      const page = await raceAbort(provider.search({
+      const searchSources = (selected) => raceAbort(provider.search({
         query: boundedQuery,
         maxResults,
         minScore: 0,
-        sources: requested,
+        sources: selected,
       }), controller.signal);
-      const results = normalizeNativeHits(page?.hits, maxResults, maxResultTextLength);
+      // With both corpora and a quota, each source is searched on its own so
+      // session chunks cannot crowd notes out of the provider's top-k.
+      const split = sourceQuota && requested.length === 2;
+      const pages = split
+        ? await Promise.all([searchSources(["memory"]), searchSources(["sessions"])])
+        : [await searchSources(requested)];
+      const normalized = pages.map((page) => normalizeNativeHits(page?.hits, maxResults, maxResultTextLength));
+      const results = split
+        ? applySourceQuota(normalized[0], normalized[1], sourceQuota, maxResults)
+        : normalized[0];
       const warnings = [];
-      if (page?.coverage === "partial" || typeof page?.warning === "string") warnings.push("native: index coverage partial");
+      if (pages.some((page) => page?.coverage === "partial" || typeof page?.warning === "string")) {
+        warnings.push("native: index coverage partial");
+      }
       return {
         results,
         warnings,
-        lowConfidence: isNativeLowConfidence(results, lowConfidenceScore),
+        lowConfidence: nativeLowConfidence(results, boundedQuery, { mode: lowConfidenceMode, score: lowConfidenceScore }),
       };
     } finally {
       clearTimeout(timer);
@@ -263,4 +349,4 @@ export function mergeRoutedResults(nativeResults, serviceResults, maxResults, { 
   return merged.slice(0, maxResults);
 }
 
-export { DEFAULT_LOW_CONFIDENCE_SCORE, NATIVE_OWNED_PATH };
+export { DEFAULT_LOW_CONFIDENCE_SCORE, DEFAULT_SOURCE_QUOTA, NATIVE_OWNED_PATH };

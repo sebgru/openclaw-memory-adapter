@@ -135,6 +135,8 @@ goes to the external service exactly as before.
 "nativeRouting": {
   "enabled": true,
   "sources": ["memory"],
+  "sourceQuota": { "memory": 3, "sessions": 2 },
+  "lowConfidenceMode": "off",
   "lowConfidenceScore": 0.35,
   "timeoutMs": 2500,
   "promptServiceScope": "none"
@@ -145,7 +147,9 @@ goes to the external service exactly as before.
 |---|---|---|
 | `enabled` | `false` | Turns routing on. |
 | `sources` | `["memory"]` | Native corpora to search: `memory` and/or `sessions`. |
-| `lowConfidenceScore` | `0.35` | Native results whose best score is below this are disclosed as low confidence. `0` disables the check. |
+| `sourceQuota` | `{ "memory": 3, "sessions": 2 }` | With both `sources`, slots per corpus (0–10 each). Each corpus is searched separately; free slots are filled by score. |
+| `lowConfidenceMode` | `"off"` | Native low-confidence rule: `off`, `score` or `lexical`. See Disclosure. |
+| `lowConfidenceScore` | `0.35` | Score threshold used by the `score` and `lexical` modes. `0` disables both. |
 | `timeoutMs` | `2500` | Native lane budget (250–6000 ms), also capped by `timeoutMs`. |
 | `promptServiceScope` | `"none"` | Extra service lane for every prompt-hook turn: `none`, `main` or `all`. |
 
@@ -178,15 +182,33 @@ selected memory plugin applies its own visibility rules to session hits.
 This SDK subpath is exported by OpenClaw 2026.11.4 but documented as a
 private-local facade, so it can change without notice; see COMPATIBILITY.md.
 
-**Disclosure (R8).** Native memory emits no low-confidence signal. The adapter
-flags a native result set when its best score is below `lowConfidenceScore`.
-The merged answer is flagged only when every lane that contributed is weak,
-and a fixed notice is added in both legacy and receipt mode. The default 0.35
-comes from a 20-case comparison (no-match top-1 0.22/0.32 vs lowest relevant
-top-1 0.35); it is not validated on a larger no-match set and should be
-tuned before relying on it. When the native lane fails, a fixed "native
-memory unavailable" notice is added and receipts never report a verified
-absence for that turn.
+**Session quota.** When `sources` contains both `memory` and `sessions`, the
+native lane runs one search per corpus on the same lease and keeps up to
+`sourceQuota.memory` notes and `sourceQuota.sessions` session chunks, each
+in provider rank order. Slots a corpus cannot fill go to the best leftovers
+of the other, and the selection is ordered by score. Without a split,
+session chunks took most top-5 slots in a 51-query evaluation (48/51); the
+simulated 3+2 split reached 34/43 top-3 against 24/43 unmixed.
+
+**Disclosure (R8).** Native memory emits no low-confidence signal, and an
+absolute score is not a reliable one: with session chunks indexed, top scores
+for no-match queries (0.35–0.44) overlap the lowest correct hits (0.445).
+`lowConfidenceMode` therefore defaults to `off`.
+
+- `score`: flag when the best native score is below `lowConfidenceScore`.
+  This only separated no-match from hits in a 20-case set without sessions.
+- `lexical`: flag only when both signals agree: no returned excerpt or path
+  shares a content term with the query (terms of four or more characters,
+  minus common English/German stopwords, matched on their first five
+  characters), and the best score is below `lowConfidenceScore`. A strong
+  cross-language semantic hit is therefore not flagged. This rule is not yet
+  validated on a labelled no-match set.
+
+When a mode flags native results, the merged answer is flagged only when every
+contributing lane is weak, with a fixed notice in legacy and receipt mode.
+Independently of the mode, a failed native lane adds a fixed "native memory
+unavailable" notice, and receipts never report a verified absence for that
+turn.
 
 Routing does not enable `memory-core` or hide its own `memory_search` tool.
 Both are Gateway configuration decisions.

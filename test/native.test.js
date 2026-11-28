@@ -4,8 +4,12 @@ import {
   DEFAULT_LOW_CONFIDENCE_SCORE,
   createNativeSearch,
   isIdentifierLike,
+  applySourceQuota,
   isNativeLowConfidence,
+  lacksLexicalEvidence,
   mergeRoutedResults,
+  nativeLowConfidence,
+  queryTerms,
   nativeRoutingSettings,
   normalizeNativeHits,
 } from "../src/native.js";
@@ -41,7 +45,9 @@ test("nativeRoutingSettings defaults to off with the C.3 threshold", () => {
   assert.deepEqual(nativeRoutingSettings(undefined), {
     enabled: false,
     sources: ["memory"],
+    lowConfidenceMode: "off",
     lowConfidenceScore: 0.35,
+    sourceQuota: { memory: 3, sessions: 2 },
     timeoutMs: 2500,
     promptServiceScope: "none",
   });
@@ -54,8 +60,21 @@ test("nativeRoutingSettings defaults to off with the C.3 threshold", () => {
     lowConfidenceScore: 0.5,
     timeoutMs: 99999,
     promptServiceScope: "main",
+    lowConfidenceMode: "lexical",
+    sourceQuota: { memory: 4, sessions: 0 },
   });
-  assert.deepEqual(custom, { enabled: true, sources: ["sessions", "memory"], lowConfidenceScore: 0.5, timeoutMs: 6000, promptServiceScope: "main" });
+  assert.deepEqual(custom, {
+    enabled: true,
+    sources: ["sessions", "memory"],
+    lowConfidenceMode: "lexical",
+    lowConfidenceScore: 0.5,
+    sourceQuota: { memory: 4, sessions: 0 },
+    timeoutMs: 6000,
+    promptServiceScope: "main",
+  });
+  assert.equal(nativeRoutingSettings({ lowConfidenceMode: "margin" }).lowConfidenceMode, "off");
+  assert.deepEqual(nativeRoutingSettings({ sourceQuota: { memory: 11, sessions: -1 } }).sourceQuota, { memory: 3, sessions: 2 });
+  assert.deepEqual(nativeRoutingSettings({ sourceQuota: [] }).sourceQuota, { memory: 3, sessions: 2 });
   assert.equal(nativeRoutingSettings({ lowConfidenceScore: 2 }).lowConfidenceScore, 0.35);
   assert.equal(nativeRoutingSettings({ lowConfidenceScore: 0 }).lowConfidenceScore, 0);
   assert.equal(nativeRoutingSettings({ timeoutMs: 10 }).timeoutMs, 250);
@@ -161,7 +180,7 @@ test("searchNative prefers the current runtime config and flags weak or partial 
   });
   const current = { marker: "current" };
   const search = createNativeSearch({ config: {}, runtime: { config: { current: () => current } } }, { loadHost: async () => host });
-  const response = await search("q", { ctx: { sessionKey: "k" } });
+  const response = await search("q", { ctx: { sessionKey: "k" }, lowConfidenceMode: "score" });
   assert.equal(calls.open[0].cfg, current);
   assert.equal(calls.open[0].agentId, "main");
   assert.deepEqual(calls.open[0].context.authority, { kind: "session", sessionKey: "k", sandboxed: false });
@@ -253,4 +272,65 @@ test("native helpers tolerate sparse input", async () => {
     ["a"],
     "path without line still deduplicates",
   );
+});
+
+test("lowConfidenceMode: off by default, score-only, or lexical evidence plus score", async () => {
+  const weak = [{ text: "holiday packing list", path: "memory/trip.md", score: 0.4 }];
+  const query = "warranty certificate for the grand piano";
+  assert.equal(nativeLowConfidence(weak, query), false, "off by default");
+  assert.equal(nativeLowConfidence(weak, query, { mode: "score", score: 0.45 }), true);
+  assert.equal(nativeLowConfidence(weak, query, { mode: "lexical", score: 0.45 }), true, "no term overlap and weak");
+  assert.equal(nativeLowConfidence(weak, query, { mode: "lexical", score: 0.35 }), false, "both signals must agree");
+  const onTopic = [{ text: "Piano warranty card scanned", path: "memory/house.md", score: 0.4 }];
+  assert.equal(nativeLowConfidence(onTopic, query, { mode: "lexical", score: 0.45 }), false, "lexical evidence clears the flag");
+  assert.equal(nativeLowConfidence(onTopic, query, { mode: "score", score: 0.45 }), true);
+  assert.equal(nativeLowConfidence([{ text: "Rechnungen 2025", score: 0.3 }], "Rechnung Flügel", { mode: "lexical" }), false, "five-character stems tolerate inflection");
+  assert.equal(lacksLexicalEvidence(weak, "what is it"), false, "no content terms, no flag");
+  assert.equal(lacksLexicalEvidence([], query), false);
+  assert.equal(lacksLexicalEvidence([{ path: "memory/piano.md" }], query), false, "paths count as evidence");
+  assert.equal(lacksLexicalEvidence([{}], query), true);
+  assert.deepEqual(queryTerms("What did we decide about the Kita Anmeldung? kita"), ["decide", "kita", "anmeldung"]);
+  assert.deepEqual(queryTerms(undefined), []);
+
+  const { host } = fakeHost({ hits: [hit("memory/trip.md", 0.4)] });
+  const search = createNativeSearch({}, { loadHost: async () => host });
+  assert.equal((await search(query, { ctx })).lowConfidence, false);
+  assert.equal((await search(query, { ctx, lowConfidenceMode: "lexical", lowConfidenceScore: 0.45 })).lowConfidence, true);
+});
+
+test("applySourceQuota keeps 3 notes + 2 session chunks, fills free slots and orders by score", () => {
+  const m = (n, score) => ({ text: `m${n}`, score });
+  const sess = (n, score) => ({ text: `s${n}`, score });
+  const memory = [m(1, 0.5), m(2, 0.45), m(3, 0.44), m(4, 0.43)];
+  const sessions = [sess(1, 0.7), sess(2, 0.69), sess(3, 0.68), sess(4, 0.67)];
+  const quota = { memory: 3, sessions: 2 };
+  assert.deepEqual(applySourceQuota(memory, sessions, quota, 5).map((x) => x.text), ["s1", "s2", "m1", "m2", "m3"]);
+  assert.deepEqual(applySourceQuota(memory, sessions, quota, 7).map((x) => x.text), ["s1", "s2", "s3", "s4", "m1", "m2", "m3"], "free slots filled by score");
+  assert.deepEqual(applySourceQuota(memory, undefined, quota, 5).map((x) => x.text), ["m1", "m2", "m3", "m4"], "missing sessions leave room for notes");
+  assert.deepEqual(applySourceQuota(undefined, sessions.slice(0, 1), quota, 5).map((x) => x.text), ["s1"]);
+  assert.deepEqual(applySourceQuota(memory, sessions, quota, 2).map((x) => x.text), ["s1", "s2"]);
+  assert.deepEqual(applySourceQuota([{ text: "a" }, m(2, 0.1)], [], { memory: 2, sessions: 0 }, 5).map((x) => x.text), ["m2", "a"], "unscored sorts last");
+});
+
+test("searchNative splits memory and sessions per source when a quota is set", async () => {
+  const sessionHit = (n, score) => hit(`sessions/s${n}.jsonl`, score, "sessions");
+  const { host, calls } = fakeHost({
+    searchImpl: (request) => ({
+      hits: request.sources[0] === "sessions"
+        ? [sessionHit(1, 0.7), sessionHit(2, 0.69), sessionHit(3, 0.68)]
+        : [hit("memory/a.md", 0.5), hit("memory/b.md", 0.45), hit("memory/c.md", 0.44), hit("memory/d.md", 0.43)],
+      coverage: request.sources[0] === "sessions" ? "partial" : "complete",
+    }),
+  });
+  const search = createNativeSearch({}, { loadHost: async () => host });
+  const quoted = await search("q", { ctx, sources: ["memory", "sessions"], sourceQuota: { memory: 3, sessions: 2 }, maxResults: 5 });
+  assert.deepEqual(calls.search.map((r) => r.sources), [["memory"], ["sessions"]]);
+  assert.deepEqual(quoted.results.map((r) => r.path), ["sessions/s1.jsonl", "sessions/s2.jsonl", "memory/a.md", "memory/b.md", "memory/c.md"]);
+  assert.deepEqual(quoted.warnings, ["native: index coverage partial"]);
+  calls.search.length = 0;
+  await search("q", { ctx, sources: ["memory", "sessions"] });
+  assert.deepEqual(calls.search.map((r) => r.sources), [["memory", "sessions"]], "no quota: one mixed search");
+  calls.search.length = 0;
+  await search("q", { ctx, sources: ["memory"], sourceQuota: { memory: 3, sessions: 2 } });
+  assert.deepEqual(calls.search.map((r) => r.sources), [["memory"]], "one source: no split");
 });

@@ -148,7 +148,7 @@ test("routed tool discloses weak native results (C.3 condition 2 / R8)", async (
     native: [nativeHit("memory/unrelated.md", 0.22)],
     service: () => ok({ results: [], coverage: fullCoverage }),
   }, async () => {
-    const { tool } = harness(routed());
+    const { tool } = harness(routed({ lowConfidenceMode: "score" }));
     const result = await tool.execute("call-4", { query: "warranty certificate for the grand piano" });
     assert.equal(result.details.lowConfidence, true);
     assert.ok(result.content[0].text.includes(ROUTED_LOW_CONFIDENCE_NOTICE));
@@ -158,7 +158,7 @@ test("routed tool discloses weak native results (C.3 condition 2 / R8)", async (
     native: [nativeHit("memory/unrelated.md", 0.22)],
     service: () => ok({ results: [serviceItem("d1", "documents/piano.md", "document")], coverage: fullCoverage }),
   }, async () => {
-    const { tool } = harness(routed());
+    const { tool } = harness(routed({ lowConfidenceMode: "score" }));
     const result = await tool.execute("call-5", { query: "warranty certificate for the grand piano" });
     assert.equal(result.details.lowConfidence, false, "a strong service hit lifts the flag");
   });
@@ -166,7 +166,7 @@ test("routed tool discloses weak native results (C.3 condition 2 / R8)", async (
     native: [nativeHit("memory/unrelated.md", 0.3)],
     service: () => ok({ results: [], coverage: fullCoverage }),
   }, async () => {
-    const { tool } = harness(routed({ lowConfidenceScore: 0.25 }));
+    const { tool } = harness(routed({ lowConfidenceMode: "score", lowConfidenceScore: 0.25 }));
     const result = await tool.execute("call-6", { query: "warranty certificate for the grand piano" });
     assert.equal(result.details.lowConfidence, false, "threshold is configurable");
   });
@@ -289,7 +289,7 @@ test("routed prompt hook falls back to the service main scope when native fails"
 test("routed prompt hook discloses weak native results in both output modes", async () => {
   for (const turnReceipts of [false, true]) {
     await withBackends({ native: [nativeHit("memory/unrelated.md", 0.32)], service: () => ok({ results: [] }) }, async () => {
-      const { beforePrompt } = harness({ ...routed(), turnReceipts });
+      const { beforePrompt } = harness({ ...routed({ lowConfidenceMode: "lexical", lowConfidenceScore: 0.45 }), turnReceipts });
       const output = await beforePrompt({ prompt: "insurance policy for the quokka" }, session);
       assert.ok(output.prependContext.includes(ROUTED_LOW_CONFIDENCE_NOTICE), `turnReceipts=${turnReceipts}`);
       assert.ok(!output.prependContext.includes(NATIVE_UNAVAILABLE_NOTICE));
@@ -367,4 +367,26 @@ test("routing edge cases: sparse responses, receipt source lists, identifier pro
   assert.equal(baseline.serviceScope, "main");
   assert.equal(baseline.nativeUnavailable, true);
   assert.deepEqual(baseline.results.map((item) => item.text), ["main"]);
+});
+
+test("default lowConfidenceMode off: weak native scores are not flagged; routed hook applies the source quota", async () => {
+  await withBackends({ native: [nativeHit("memory/unrelated.md", 0.22)], service: () => ok({ results: [] }) }, async () => {
+    const { beforePrompt, tool } = harness(routed());
+    const output = await beforePrompt({ prompt: "insurance policy for the quokka" }, session);
+    assert.ok(!output.prependContext.includes(ROUTED_LOW_CONFIDENCE_NOTICE));
+    const result = await tool.execute("call-q", { query: "insurance policy for the quokka" });
+    assert.equal(result.details.lowConfidence, false);
+  });
+  await withBackends({
+    native: (request) => request.sources.length === 1 && request.sources[0] === "sessions"
+      ? [1, 2, 3, 4].map((n) => ({ ...nativeHit(`sessions/s${n}.jsonl`, 0.8 - n / 100), source: "sessions" }))
+      : [1, 2, 3, 4].map((n) => nativeHit(`memory/n${n}.md`, 0.6 - n / 100)),
+    service: () => ok({ results: [] }),
+  }, async () => {
+    const { tool } = harness(routed({ sources: ["memory", "sessions"] }));
+    const result = await tool.execute("call-r", { query: "what did we decide about the router" });
+    const sources = result.details.results.map((item) => item.source);
+    assert.equal(sources.filter((s) => s === "native-sessions").length, 2);
+    assert.equal(sources.filter((s) => s === "native-memory").length, 3);
+  });
 });
